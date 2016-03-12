@@ -10,7 +10,7 @@ So, I'm intending to solve the following things:
 
 * A general way to do data modeling. The package 'schematics' does it well in the past time, but it's designed for relational database and lacks of some modern features such as:
   * Avoid serialize none attribute by default
-  * Support data model patchin
+  * Support data model patching
   * Support dynamic / any type (It's somehow very common to represent data in this way by JSON)
 * A flexible way to build up a data processing pipeline. I was inspired by 'admission control' of k8s when I'm thinking about how can I generalize the operation on the data models. So, it should have the following features:
   * A clear interface: Well defined operations and standard pluggable processor framework.
