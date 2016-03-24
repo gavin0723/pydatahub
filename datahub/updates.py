@@ -50,6 +50,18 @@ class UpdateAction(DataModel):
     """
     key = StringType(required = True, doc = 'The update key')
 
+    def getMatchedObjects(self, model):
+        """Get the matched objects
+        Returns:
+            Yield of object
+        """
+        keys = key.spilt('.')
+
+    def execute(self, model):
+        """Execute the update action on the model
+        """
+        raise NotImplementedError
+
 class PushAction(UpdateAction):
     """The update action
     """
@@ -75,6 +87,11 @@ class SetAction(UpdateAction):
     """Set action
     """
     value = AnyType(required = True)
+
+    def execute(self, model):
+        """Execute the update action on the model
+        """
+        raise NotImplementedError
 
 class ClearAction(UpdateAction):
     """Clear action

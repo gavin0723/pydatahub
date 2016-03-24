@@ -33,7 +33,7 @@ class Resource(IDDataModel):
     """The resource
     """
     # The metadata
-    metadata = ModelType(Metadata, required = True, doc = 'The metadata of the resource')
+    metadata = ModelType(Metadata, doc = 'The metadata of the resource')
 
 class ResourceWatchChangeSet(DataModel):
     """The resource watch change set
@@ -44,5 +44,12 @@ class ResourceWatchChangeSet(DataModel):
     timestamp = FloatType(required = True, doc = 'The change timestamp')
     # The model id
     modelID = StringType(doc = 'The related model id')
+    # The old model
+    oldModel = ModelType(DataModel, doc = 'The old model. This field is set to the model before modification in replace, update action and the deleted model in delete action.')
     # The changeset related model
-    model = ModelType(DataModel, doc = 'The related model')
+    newModel = ModelType(DataModel, doc = 'The new model. This field is set to the model after modification in replace, update action.')
+
+    def __str__(self):
+        """Convert to string
+        """
+        return 'Name [%s] TS [%s] ID [%s]' % (self.name, self.timestamp, self.modelID)

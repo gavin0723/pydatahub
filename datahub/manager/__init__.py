@@ -10,7 +10,7 @@
 """
 
 from model import Resource
-from manager import DataManager
+from manager import DataManager, ResourceWatchChangeSet
 from spec import *
 
 __all__ = [ 'Resource', 'DataManager' ]

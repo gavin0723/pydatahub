@@ -33,7 +33,7 @@ class FeatureNotSupportedError(DataHubError):
 class InvalidParameterError(DataHubError):
     """The parameter is invalid
     """
-    def __init__(reason = None):
+    def __init__(self, reason = None):
         """Create a new InvalidParameterError
         """
         self.reason = reason
@@ -130,7 +130,8 @@ class UnknownFieldError(DataModelError):
         """Create a new UnknownFieldError
         """
         self.key = key
-        super(UnknownFieldError, self).__init__(context)
+        self.context = context
+        super(UnknownFieldError, self).__init__()
 
     def __str__(self):
         """Convert to string

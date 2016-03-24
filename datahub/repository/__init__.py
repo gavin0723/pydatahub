@@ -9,7 +9,7 @@
 
 """
 
-from result import UpdatesResult, DeletesResult
+from result import ReplaceResult, UpdateResult, UpdatesResult, DeletesResult
 from repository import Repository
 
 __all__ = [ 'Repository' ]

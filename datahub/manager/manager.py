@@ -17,7 +17,6 @@ from Queue import Queue
 from datetime import datetime
 from threading import RLock
 
-
 from datahub.updates import SetAction
 from datahub.repository import Repository
 from datahub.conditions import AndCondition, LargerCondition
@@ -80,21 +79,34 @@ class DataManager(object):
         """
         pass
 
-    def updateWatch(self, name, ts, modelID, model):
+    def updateWatch(self, name, ts, modelID, oldModel, newModel):
         """Update the watch status
         Parameters:
             name                        The watch name
             ts                          The timestamp
-            model                       The model
+            oldModel                    The old model
+            newModel                    The new model
+        Returns:
+            Nothing
         """
         # Create the change set
-        changeSet = ResourceWatchChangeSet(name = name, timestamp = ts, modelID = modelID, model = model)
+        changeSet = ResourceWatchChangeSet(name = name, timestamp = ts, modelID = modelID, oldModel = oldModel, newModel = newModel)
         changeSet.validate()
         # Add to the queue
         with self._watchQueueLock:
             for condition, queue in self._watchQueues.itervalues():
-                if not condition or model.match(condition):
+                if not condition or name == WATCH_RESET:
                     queue.put(changeSet)
+                elif condition and name != WATCH_RESET:
+                    # We check the condition on different models (old/new) for different change type
+                    if name == WATCH_CREATED or name == WATCH_PRESERVED:
+                        model = newModel
+                    else:
+                        # Replaced, Updated, Deleted
+                        model = oldModel
+                    # Check if
+                    if model and model.match(condition):
+                        queue.put(changeSet)
 
     def invokeFeature(self, name, params = None):
         """Invoke a feature
@@ -222,7 +234,7 @@ class DataManager(object):
         # Trigger an event
         self.trigger(EVENT_CREATED, EventArgs(EVENT_CREATED, type(self.repository).create, [ model ], 1, [ model.id ]))
         # Update the watch
-        self.updateWatch(WATCH_CREATED, model.metadata.timestamp, model.id, model)
+        self.updateWatch(WATCH_CREATED, model.metadata.timestamp, model.id, None, model)
         # Done
         return model
 
@@ -240,20 +252,19 @@ class DataManager(object):
         # Set the model metadata
         if not model.metadata:
             model.metadata = Metadata()
+        ts = time()
         model.metadata.createTime = datetime.now()
-        model.metadata.timestamp = time()
+        model.metadata.timestamp = ts
         # Replace the model
-        model = self.repository.replace(model, configs)
-        if not model:
-            return
+        res = self.repository.replace(model, configs)
         # Set the ts
-        self._timestamp = max(model.metadata.timestamp, self._timestamp)
+        self._timestamp = max(ts, self._timestamp)
         # Trigger an event
-        self.trigger(EVENT_REPLACED, EventArgs(EVENT_REPLACED, type(self.repository).replace, [ model ], 1, [ model.id ]))
+        #self.trigger(EVENT_REPLACED, EventArgs(EVENT_REPLACED, type(self.repository).replace, [ model ], 1, [ model.id ]))
         # Update the watch
-        self.updateWatch(WATCH_REPLACED, model.metadata.timestamp, model.id, model)
+        self.updateWatch(WATCH_REPLACED, model.metadata.timestamp, model.id, res.before, res.after)
         # Done
-        return model
+        return res
 
     def updateByID(self, id, updates, configs = None):
         """Update a model by id
@@ -265,20 +276,19 @@ class DataManager(object):
         if not updates:
             raise InvalidParameterError(reason = 'Require [updates]')
         # Add update for ts
+        ts = time()
         updates = list(updates)
-        updates.append(SetAction(key = 'metadata.timestamp', value = time()))
+        updates.append(SetAction(key = 'metadata.timestamp', value = ts))
         # Update
-        model = self.repository.updateByID(id, updates, configs)
-        if not model:
-            return
+        res = self.repository.updateByID(id, updates, configs)
         # Set the ts
-        self._timestamp = max(model.metadata.timestamp, self._timestamp)
+        self._timestamp = max(ts, self._timestamp)
         # Trigger an event
-        self.trigger(EVENT_UPDATED, EventArgs(EVENT_UPDATED, type(self.repository).updateByID, [ model ], 1, [ model.id ]))
+        #self.trigger(EVENT_UPDATED, EventArgs(EVENT_UPDATED, type(self.repository).updateByID, [ model ], 1, [ model.id ]))
         # Update the watch
-        self.updateWatch(WATCH_UPDATED, model.metadata.timestamp, model.id, model)
+        self.updateWatch(WATCH_UPDATED, ts, res.before.id, res.before, res.after)
         # Done
-        return model
+        return res
 
     def updatesByID(self, ids, updates, configs = None):
         """Update a couple of models by id
@@ -300,20 +310,21 @@ class DataManager(object):
         # Set the ts
         self._timestamp = max(ts, self._timestamp)
         # Trigger an event
-        self.trigger(EVENT_UPDATED, EventArgs(
-            EVENT_UPDATED,
-            type(self.repository).updatesByID,
-            res.models,
-            res.count,
-            [ x.id for x in res.models ] if res.models else None
-            ))
+        #self.trigger(EVENT_UPDATED, EventArgs(
+        #    EVENT_UPDATED,
+        #    type(self.repository).updatesByID,
+        #    res.models,
+        #    res.count,
+        #    [ x.id for x in res.models ] if res.models else None
+        #    ))
         # Update the watch
-        if res.models:
-            for model in res.models:
-                self.updateWatch(WATCH_UPDATED, ts, model.id, model)
+        if res.updates:
+            for update in res.updates:
+                self.updateWatch(WATCH_UPDATED, ts, update.before.id, update.before, update.after)
         else:
+            # When doing fast-update, the ids here is not always correct
             for id in ids:
-                self.updateWatch(WATCH_UPDATED, ts, id, None)
+                self.updateWatch(WATCH_UPDATED, ts, id, None, None)
         # Done
         return res
 
@@ -337,19 +348,20 @@ class DataManager(object):
         # Set the ts
         self._timestamp = max(ts, self._timestamp)
         # Trigger an event
-        self.trigger(EVENT_UPDATED, EventArgs(
-            EVENT_UPDATED,
-            type(self.repository).updatesByID,
-            res.models,
-            res.count,
-            [ x.id for x in res.models ] if res.models else None
-            ))
+        #self.trigger(EVENT_UPDATED, EventArgs(
+        #    EVENT_UPDATED,
+        #    type(self.repository).updatesByID,
+        #    res.models,
+        #    res.count,
+        #    [ x.id for x in res.models ] if res.models else None
+        #    ))
         # Update the watch
-        if res.models:
-            for model in res.models:
-                self.updateWatch(WATCH_UPDATED, ts, model.id, model)
+        if res.updates:
+            for update in res.updates:
+                self.updateWatch(WATCH_UPDATED, ts, update.before.id, update.before, update.after)
         else:
-            self.updateWatch(WATCH_RESET, ts, None, None)
+            # Reset
+            self.updateWatch(WATCH_RESET, ts, None, None, None)
         # Done
         return res
 
@@ -369,9 +381,9 @@ class DataManager(object):
         self.trigger(EVENT_DELETED, EventArgs(EVENT_DELETED, type(self.repository).deleteByID, model, 1, [ id ]))
         # Update the watch
         if model:
-            self.updateWatch(WATCH_DELETED, ts, model.id, model)
+            self.updateWatch(WATCH_DELETED, ts, model.id, model, None)
         else:
-            self.updateWatch(WATCH_DELETED, ts, id, None)
+            self.updateWatch(WATCH_DELETED, ts, id, None, None)
         # Done
         return model
 
@@ -392,20 +404,21 @@ class DataManager(object):
         # Trigger an event
         # NOTE:
         #   Here, the ids is the max deletes collection
-        self.trigger(EVENT_DELETED, EventArgs(
-            EVENT_DELETED,
-            type(self.repository).deletesByID,
-            res.models,
-            res.count,
-            [ x.id for x in res.models ] if res.models else None
-            ))
+        #self.trigger(EVENT_DELETED, EventArgs(
+        #    EVENT_DELETED,
+        #    type(self.repository).deletesByID,
+        #    res.models,
+        #    res.count,
+        #    [ x.id for x in res.models ] if res.models else None
+        #    ))
         # Update the watch
         if res.models:
             for model in res.models:
-                self.updateWatch(WATCH_DELETED, ts, model.id, model)
+                self.updateWatch(WATCH_DELETED, ts, model.id, model, None)
         else:
+            # When doing fast-delete, the ids here is not always correct
             for id in ids:
-                self.updateWatch(WATCH_DELETED, ts, model.id, None)
+                self.updateWatch(WATCH_DELETED, ts, model.id, None, None)
         # Done
         return res
 
@@ -434,9 +447,9 @@ class DataManager(object):
         # Update the watch
         if res.models:
             for model in res.models:
-                self.updateWatch(WATCH_DELETED, ts, model.id, model)
+                self.updateWatch(WATCH_DELETED, ts, model.id, model, None)
         else:
-            self.updateWatch(WATCH_RESET, ts, None, None)
+            self.updateWatch(WATCH_RESET, ts, None, None, None)
         # Done
         return res
 
@@ -504,7 +517,7 @@ class DataManager(object):
                 if not latestTimetamp or latestTimetamp <= model.metadata.timestamp:
                     latestTimetamp = model.metadata.timestamp
                 # Yield return
-                yield ResourceWatchChangeSet(name = WATCH_PRESERVED, timestamp = model.metadata.timestamp, modelID = model.id, model = model)
+                yield ResourceWatchChangeSet(name = WATCH_PRESERVED, timestamp = model.metadata.timestamp, modelID = model.id, oldModel = None, newModel = model)
             # Wait for the queue
             while True:
                 changeSet = queue.get()

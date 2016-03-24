@@ -28,10 +28,12 @@
 import logging
 
 from unifiedrpc import context, endpoint, Service, Endpoint
-from unifiedrpc.helpers import requiredata, paramtype
+from unifiedrpc.helpers import requiredata, paramtype, container, mimetype
 from unifiedrpc.errors import BadRequestError, NotFoundError
 from unifiedrpc.adapters.web import head, get, post, put, patch, delete
+from unifiedrpc.content.container import PlainContentContainer
 
+from datahub.utils import json
 from datahub.model import DataModel
 from datahub.conditions import *
 from datahub.updates import *
@@ -89,18 +91,18 @@ class KeyValueAttributeParameterMapper(ParameterMapper):
 class ResourceService(Service):
     """The resource service
     """
-    def __init__(self, name, manager, locations, pipeline = None):
+    def __init__(self, name, manager, locations, pipeline = None, serviceName = None):
         """Create a new ResourceService
         """
         self.name = name
         self.manager = manager
         self.locations = locations
         # Create the endpoints
-        endpoints = []
+        endpoints = {}
         for location in self.locations:
-            endpoints.extend(self.createEndpoints4Location(location))
+            endpoints.update(map(lambda (name, endpoint): ('%s:%s' % (location.path, name), endpoint), self.createEndpoints4Location(location)))
         # Super
-        super(ResourceService, self).__init__(name)
+        super(ResourceService, self).__init__(serviceName or name, endpoints)
 
     def __resourcerequest__(self, location, feature, params = None):
         """Handle resource request
@@ -129,14 +131,18 @@ class ResourceService(Service):
             condition = None
         # Start watch
         for changeSet in self.manager.watch(condition):
-            yield changeSet.dump()
+            yield '%s\n' % json.dumps(changeSet.dump(), ensure_ascii = False).encode('utf8')
 
     def createEndpoints4Location(self, location):
         """Create the endpoint for a feature
+        Returns:
+            Yield of (name, Endpoint obejct)
         """
         # The watch feature endpoint
         if location.enableWatch:
-            yield post(path = location.path + '/%s/_watch' % self.name)(endpoint()(self.watch))
+            yield '_watch', post(path = location.path + '/%s/_watch' % self.name)(
+                mimetype('text/plain')(container(PlainContentContainer)(endpoint()(self.watch)))
+                )
         # Create the handlers
         handlers = {}
         # The exist feature
@@ -144,7 +150,7 @@ class ResourceService(Service):
             handler = StoreExistFeatureEndpointHandler(self, location)
             handlers['store.exist'] = handler
             handlers['store.exists'] = handler
-            yield head(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.exist', head(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
         if not location.features or 'query.exists' in location.features:
             handler = QueryExistsFeatureEndpointHandler(self, location)
             handlers['query.exists'] = handler
@@ -153,30 +159,30 @@ class ResourceService(Service):
             handler = StoreGetFeatureEndpointHandler(self, location)
             handlers['store.get'] = handler
             handlers['store.gets'] = handler
-            yield get(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.get', get(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
         if not location.features or 'store.getall' in location.features:
             handler = StoreGetAllFeatureEndpointHandler(self, location)
             handlers['store.getall'] = handler
-            yield get(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.getall', get(path = location.path + '/%s' % self.name)(endpoint()(handler))
         if not location.features or 'query.gets' in location.features:
-            handler = QueryGetsFeatureEndpointHandler(service, location)
+            handler = QueryGetsFeatureEndpointHandler(self, location)
             handlers['query.gets'] = handler
         # The create feature
         if not location.features or 'store.create' in location.features:
             handler = StoreCreateFeatureEndpointHandler(self, location)
             handlers['store.create'] = handler
-            yield post(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.create', post(path = location.path + '/%s' % self.name)(endpoint()(handler))
         # The replace feature
         if not location.features or 'store.replace' in location.features:
             handler = StoreReplaceFeatureEndpointHandler(self, location)
             handlers['store.replace'] = handler
-            yield post(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.replace', put(path = location.path + '/%s' % self.name)(endpoint()(handler))
         # The update feature
         if not location.features or 'store.update' in location.features or 'store.updates' in location.features:
             handler = StoreUpdateFeatureEndpointHandler(self, location)
             handlers['store.update'] = handler
             handlers['store.updates'] = handler
-            yield patch(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.update', patch(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
         if not location.features or 'query.updates' in location.features:
             handler = QueryUpdatesFeatureEndpointHandler(self, location)
             handlers['query.updates'] = handler
@@ -185,15 +191,23 @@ class ResourceService(Service):
             handler = StoreDeleteFeatureEndpointHandler(self, location)
             handlers['store.delete'] = handler
             handlers['store.deletes'] = handler
-            yield delete(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.delete', delete(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
         if not location.features or 'query.deletes' in location.features:
             handler = QueryDeletesFeatureEndpointHandler(self, location)
             handlers['query.deletes'] = handler
         # The count feature
-
+        if not location.features or 'store.count' in location.features:
+            handler = StoreCountFeatureEndpointHandler(self, location)
+            handlers['store.count'] = handler
+        if not location.features or 'store.countall' in location.features:
+            handler = StoreCountAllFeatureEndpointHandler(self, location)
+            handlers['store.countall'] = handler
+        if not location.features or 'query.count' in location.features:
+            handler = QueryCountFeatureEndpointHandler(self, location)
+            handlers['query.count'] = handler
         # The general feature endpoint
         if location.enableGeneralFeature:
-            yield post(path = location.path + '/%s/_feature/<featureName>' % self.name)(endpoint()(GeneralFeatureEndpointHandler(self, location, handlers)))
+            yield '_feature', post(path = location.path + '/%s/_feature/<featureName>' % self.name)(endpoint()(GeneralFeatureEndpointHandler(self, location, handlers)))
 
 class FeatureEndpointHandler(object):
     """The feature endpoint handler
@@ -212,7 +226,7 @@ class FeatureEndpointHandler(object):
     def getIDs(self, params):
         """Get and remove ids
         """
-        if not id in params:
+        if not 'id' in params:
             raise BadRequestError(reason = 'Require id')
         ids = filter(lambda x: x, map(lambda x: x.strip(), params.pop('id').split(',')))
         if not ids:
@@ -260,7 +274,7 @@ class FeatureEndpointHandler(object):
             raise BadRequestError
         # Get conditions
         conditions = []
-        for key, value in kwargs.iteritems():
+        for key, value in params.iteritems():
             if not key in self.location.params:
                 raise BadRequestError(reason = 'Unknown parameter [%s]' % key)
             conditions.append(self.location.params[key].getCondition(value))
@@ -350,11 +364,19 @@ class StoreGetFeatureEndpointHandler(FeatureEndpointHandler):
             conditions = self.getConditionsFromParams(kwargs)
             conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
             # Call the features
-            return [ x.dump() for x in self.service.__resourcerequest__(
+            models = [ x.dump() for x in self.service.__resourcerequest__(
                 self.location,
                 'query.gets',
                 dict(condition = AndCondition(conditions = conditions), sorts = sorts)
                 )]
+            # Make the same behavior
+            if len(ids) == 1:
+                if models:
+                    return models[0]
+                else:
+                    raise NotFoundError
+            else:
+                return models
 
 class StoreGetAllFeatureEndpointHandler(FeatureEndpointHandler):
     """The store.getall feature
@@ -363,41 +385,36 @@ class StoreGetAllFeatureEndpointHandler(FeatureEndpointHandler):
         """The get api entry
         """
         body = context.request.content.data
-        # Get sorts
-        sorts = self.getSorts(body)
-        # Get start & size
-        start = body.pop('start', 0)
-        size = body.pop('size', 10)
-        # Check the body
         if body:
-            raise BadRequestError(reason = 'Invalid body')
+            # Get sorts
+            sorts = self.getSorts(body)
+            # Get start & size
+            start = body.pop('start', 0)
+            size = body.pop('size', 10)
+            # Check the body
+            if body:
+                raise BadRequestError(reason = 'Invalid body')
+        else:
+            sorts = None
+            start = 0
+            size = 10
         # Check other parameters
         if not kwargs:
-            # No more parameters, call store.get or store.gets
-            if len(ids) == 1:
-                if self.location.features and not 'store.get' in self.location.features:
-                    self.raiseFeatureNotSupported('store.get')
-                model = self.service.__resourcerequest__(self.location, 'store.get', dict(id = ids[0]))
-                if not model:
-                    raise NotFoundError
-                return model.dump()
-            else:
-                if self.location.features and not 'store.gets' in self.location.features:
-                    self.raiseFeatureNotSupported('store.gets')
-                # Call the feature
-                return [ x.dump() for x in self.service.__resourcerequest__(self.location, 'store.gets', dict(ids = ids, sorts = sorts)) ]
+            if self.location.features and not 'store.getall' in self.location.features:
+                self.raiseFeatureNotSupported('store.getall')
+            # Call the feature
+            return [ x.dump() for x in self.service.__resourcerequest__(self.location, 'store.getall', dict(sorts = sorts, start = start, size = size)) ]
         else:
             # Found other parameters
             if self.location.features and not 'query.gets' in self.location.features:
                 self.raiseFeatureNotSupported('query.gets')
             # Get conditions
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
             # Call
             return [ x.dump() for x in self.service.__resourcerequest__(
                 self.location,
                 'query.gets',
-                dict(condition = AndCondition(conditions = conditions), sorts = sorts)
+                dict(condition = AndCondition(conditions = conditions), sorts = sorts, start = start, size = size)
                 )]
 
 class QueryGetsFeatureEndpointHandler(FeatureEndpointHandler):

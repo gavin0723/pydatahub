@@ -9,3 +9,7 @@
 
 """
 
+from resource import ResourceService, KeyValueAttributeParameterMapper, ResourceLocation
+from connector import Connection, ResourceConnector
+
+__all__ = [ 'ResourceService', 'KeyValueAttributeParameterMapper', 'ResourceLocation', 'Connection', 'ResourceConnector' ]

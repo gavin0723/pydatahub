@@ -60,7 +60,7 @@ class DataType(object):
         """Validate the value
         """
         # Run choices validation
-        if self.choices and not value in self.choices:
+        if not self.isEmpty(value) and self.choices and not value in self.choices:
             raise ChoiceValidationError(value, self.choices)
         # Run custom validator
         if self._validator:
@@ -200,7 +200,7 @@ class StringType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, basestring):
+        if not self.isEmpty(value) and not isinstance(value, basestring):
             raise TypeValidationError(basestring, type(value), value)
         # Super
         super(StringType, self).__validatevalue__(value, context)
@@ -217,14 +217,14 @@ class IntegerType(DataType):
             return value
         elif isinstance(value, basestring) and value.isdigit():
             return int(value)
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), (int, long), value, loadContext.raw)
 
     def __validatevalue__(self, value, context):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, (int, long)):
+        if not self.isEmpty(value) and not isinstance(value, (int, long)):
             raise TypeValidationError((int, long), type(value), value)
         # Super
         super(IntegerType, self).__validatevalue__(value, context)
@@ -249,14 +249,14 @@ class FloatType(DataType):
                 return float(value)
             except:
                 raise ValueConversionError(type(value), float, value, loadContext.raw)
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), float, value, loadContext.raw)
 
     def __validatevalue__(self, value, context):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, float):
+        if not self.isEmpty(value) and not isinstance(value, float):
             raise TypeValidationError(float, type(value), value)
         # Super
         super(FloatType, self).__validatevalue__(value, context)
@@ -293,14 +293,14 @@ class BooleanType(DataType):
                 return false
             else:
                 raise ValueConversionError(type(value), bool, value, loadContext.raw)
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), bool, value, loadContext.raw)
 
     def __validatevalue__(self, value, context):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, bool):
+        if not self.isEmpty(value) and not isinstance(value, bool):
             raise TypeValidationError(bool, type(value), value)
         # Super
         super(BooleanType, self).__validatevalue__(value, context)
@@ -323,7 +323,7 @@ class DatetimeType(DataType):
             return datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
         elif isinstance(value, (int, long, float)):
             return datetime.fromtimestamp(int(value))
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), datetime, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -362,7 +362,7 @@ class DateType(DataType):
             return arrow.get(value).date()
         elif isinstance(value, (int, long, float)):
             return date.fromtimestamp(int(value)).date()
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), date, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -382,7 +382,7 @@ class DateType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, date):
+        if not self.isEmpty(value) and not isinstance(value, date):
             raise TypeValidationError(date, type(value), value)
         # Super
         super(DateType, self).__validatevalue__(value, context)
@@ -401,7 +401,7 @@ class TimeType(DataType):
             return datetime.strptime(value, '%H:%M:%S.%f').time()
         elif isinstance(value, (int, long, float)):
             return date.fromtimestamp(int(value)).time()
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), date, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -418,7 +418,7 @@ class TimeType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, time):
+        if not self.isEmpty(value) and not isinstance(value, time):
             raise TypeValidationError(time, type(value), value)
         # Super
         super(TimeType, self).__validatevalue__(value, context)
@@ -440,7 +440,7 @@ class TimeDeltaType(DataType):
                 raise ValueConversionError(type(value), timedelta, value, loadContext.raw)
         elif isinstance(value, (int, long, float)):
             return timedelta(seconds = float(value))
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), timedelta, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -452,7 +452,7 @@ class TimeDeltaType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, timedelta):
+        if not self.isEmpty(value) and not isinstance(value, timedelta):
             raise TypeValidationError(timedelta, type(value), value)
         # Super
         super(TimeDeltaType, self).__validatevalue__(value, context)
@@ -498,7 +498,7 @@ class ListType(DataType):
             if nestedError:
                 raise nestedError
             return items
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), (list, tuple), value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -510,22 +510,23 @@ class ListType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, list):
+        if not self.isEmpty(value) and not isinstance(value, list):
             raise TypeValidationError(list, type(value), value)
         # Check items
-        nestedError = None
-        for i in range(0, len(value)):
-            v = value[i]
-            try:
-                self.itemType.validate(v, context)
-            except Exception as error:
-                if not nestedError:
-                    nestedError = NestedDataModelError({})
-                nestedError.errors['_item[%s]' % i] = error
-                if not context.continueOnError:
-                    break
-        if nestedError:
-            raise nestedError
+        if not self.isEmpty(value):
+            nestedError = None
+            for i in range(0, len(value)):
+                v = value[i]
+                try:
+                    self.itemType.validate(v, context)
+                except Exception as error:
+                    if not nestedError:
+                        nestedError = NestedDataModelError({})
+                    nestedError.errors['_item[%s]' % i] = error
+                    if not context.continueOnError:
+                        break
+            if nestedError:
+                raise nestedError
         # Super
         super(ListType, self).__validatevalue__(value, context)
 
@@ -589,7 +590,7 @@ class SetType(DataType):
                 raise nestedError
             # Done
             return Set(items)
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), (list, tuple, Set), value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -601,21 +602,22 @@ class SetType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, Set):
+        if not self.isEmpty(value) and not isinstance(value, Set):
             raise TypeValidationError(Set, type(value), value)
         # Check items
-        nestedError = None
-        for v in value:
-            try:
-                self.itemType.validate(v, context)
-            except Exception as error:
-                if not nestedError:
-                    nestedError = NestedDataModelError({})
-                nestedError.errors[str(v)] = error
-                if not context.continueOnError:
-                    break
-        if nestedError:
-            raise nestedError
+        if not self.isEmpty(value):
+            nestedError = None
+            for v in value:
+                try:
+                    self.itemType.validate(v, context)
+                except Exception as error:
+                    if not nestedError:
+                        nestedError = NestedDataModelError({})
+                    nestedError.errors[str(v)] = error
+                    if not context.continueOnError:
+                        break
+            if nestedError:
+                raise nestedError
         # Super
         super(SetType, self).__validatevalue__(value, context)
 
@@ -681,7 +683,7 @@ class DictType(DataType):
                 raise nestedError
             # Done
             return items
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), dict, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):
@@ -693,23 +695,24 @@ class DictType(DataType):
         """Validate the value
         """
         # Check the value type
-        if not isinstance(value, dict):
+        if not self.isEmpty(value) and not isinstance(value, dict):
             raise TypeValidationError(dict, type(value), value)
         # Check items
-        nestedError = None
-        for k, v in value.iteritems():
-            try:
-                if not isinstance(k, basestring):
-                    raise TypeValidationError(basestring, type(v), v, value)
-                self.itemType.validate(v, context)
-            except Exception as error:
-                if not nestedError:
-                    nestedError = NestedDataModelError({})
-                nestedError.errors[k] = error
-                if not context.continueOnError:
-                    break
-        if nestedError:
-            raise nestedError
+        if not self.isEmpty(value):
+            nestedError = None
+            for k, v in value.iteritems():
+                try:
+                    if not isinstance(k, basestring):
+                        raise TypeValidationError(basestring, type(v), v, value)
+                    self.itemType.validate(v, context)
+                except Exception as error:
+                    if not nestedError:
+                        nestedError = NestedDataModelError({})
+                    nestedError.errors[k] = error
+                    if not context.continueOnError:
+                        break
+            if nestedError:
+                raise nestedError
         # Super
         super(DictType, self).__validatevalue__(value, context)
 
@@ -776,7 +779,9 @@ class ModelType(DataType):
         Returns:
             The loaded value
         """
-        if isinstance(value, self.modelClass):
+        if self.isEmpty(value):
+            pass
+        elif isinstance(value, self.modelClass):
             return value
         elif isinstance(value, dict):
             try:
@@ -795,7 +800,8 @@ class ModelType(DataType):
         """Validate the value
         """
         try:
-            self.modelClass.validate(value, context)
+            if not self.isEmpty(value):
+                self.modelClass.validate(value, context)
         except Exception as error:
             raise NestedDataModelError({ self.modelClass.__name__: error }, value)
         # Super
@@ -836,7 +842,7 @@ class DynamicModelType(DataType):
         if isinstance(value, dict):
             modelClass = self._modelClassSelector(value, loadContext)
             return modelClass(value)
-        else:
+        elif not self.isEmpty(value):
             raise ValueConversionError(type(value), dict, value, loadContext.raw)
 
     def __dumpvalue__(self, value, context):

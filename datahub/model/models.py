@@ -191,7 +191,8 @@ class DataModel(object):
     def update(self, updates):
         """Update this model by the update actions
         """
-        raise NotImplementedError
+        for update in updates:
+            update.execute(self)
 
     def dump(self, context = None):
         """Dump this model

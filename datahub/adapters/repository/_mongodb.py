@@ -21,7 +21,7 @@ from datahub.errors import BadValueError, DuplicatedKeyError, ModelNotFoundError
 from datahub.updates import PushAction, PushsAction, PopAction, SetAction, ClearAction
 from datahub.conditions import AndCondition, OrCondition, NotCondition, KeyValueCondition, KeyValuesCondition, ExistCondition, \
     NonExistCondition, LargerCondition, SmallerCondition
-from datahub.repository import Repository, UpdatesResult, DeletesResult
+from datahub.repository import Repository, ReplaceResult, UpdateResult, UpdatesResult, DeletesResult
 
 class MongodbRepository(Repository):
     """The mongodb repository
@@ -34,7 +34,7 @@ class MongodbRepository(Repository):
         metadata = modelClass.getMetadata() or DEFAULT_MODEL_METADATA
         # Get the collection
         if not metadata.namespace:
-            raise ValueError('Require namespace in the model [%s] metadata' % type(modelClass).__name__)
+            raise ValueError('Require namespace in the model [%s] metadata' % modelClass.__name__)
         self.collection = database[metadata.namespace]
         # Get the indices
         if metadata.indices:
@@ -235,7 +235,7 @@ class MongodbRepository(Repository):
         Returns:
             Yield of model
         """
-        for doc in self.collection.find({ '_id': { '$in': ids } }, sort = [ self.getSortBySort(x) for x in sorts ] if sorts else self.sorts):
+        for doc in self.collection.find({ '_id': { '$in': ids } }, sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ]):
             model = self.modelClass(doc)
             model.validate()
             yield model
@@ -249,7 +249,7 @@ class MongodbRepository(Repository):
             Yield of model
         """
         for doc in self.collection.find(self.getQueryByCondition(condition),
-            sort = [ self.getSortBySort(x) for x in sorts ] if sorts else self.sorts,
+            sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ],
             skip = start,
             limit = size
             ):
@@ -263,7 +263,7 @@ class MongodbRepository(Repository):
         Returns:
             Yield of model
         """
-        for doc in self.collection.find(sort = [ self.getSortBySort(x) for x in sorts ] if sorts else self.sorts, skip = start, limit = size):
+        for doc in self.collection.find(sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ], skip = start, limit = size):
             model = self.modelClass(doc)
             model.validate()
             yield model
@@ -281,7 +281,7 @@ class MongodbRepository(Repository):
             try:
                 self.collection.insert_one(model.dump(DumpContext(datetime2str = False)))
             except DuplicateKeyError as error:
-                raise DuplicatedKeyError(error.error)
+                raise DuplicatedKeyError(error.message)
         else:
             self.collection.replace_one({ '_id': model.id }, model.dump(DumpContext(datetime2str = False)), upsert = True)
         # Done
@@ -293,13 +293,17 @@ class MongodbRepository(Repository):
         Parameters:
             model                           The model object
         Returns:
-            The model object which is replaced, None will be returned if not found or not replaced
+            ReplaceResult
         """
-        res = self.collection.replace_one({ '_id': model.id }, model.dump(DumpContext(datetime2str = False)))
-        if res.matched_count == 0:
+        # The document before replacing will be returned
+        doc = self.collection.find_one_and_replace({ '_id': model.id }, model.dump(DumpContext(datetime2str = False)))
+        if not doc:
             raise ModelNotFoundError
-        if res.modified_count > 0:
-            return model
+        # Load model
+        oldModel = self.modelClass(doc)
+        oldModel.validate()
+        # Done
+        return ReplaceResult(before = oldModel, after = model)
 
     @Repository.updateByID.implement
     def updateByID(self, id, updates, configs = None):
@@ -312,13 +316,17 @@ class MongodbRepository(Repository):
         NOTE:
             Current implementation cannot detect if the model is updated or not (which has no changes)
         """
-        doc = self.collection.find_one_and_update({ '_id': id }, self.getUpdatesByUpdates(updates), return_document = ReturnDocument.AFTER)
-        if doc:
-            model = self.modelClass(doc)
-            model.validate()
-            return model
-        else:
+        doc = self.collection.find_one_and_update({ '_id': id }, self.getUpdatesByUpdates(updates))
+        if not doc:
             raise ModelNotFoundError
+        # Load the old model
+        oldModel = self.modelClass(doc)
+        oldModel.validate()
+        # TODO: Create the updated model by applying the updates
+        #newModel = oldModel.clone()
+        #newModel.update(updates)
+        # Done
+        return UpdateResult(before = oldModel, after = None)
 
     @Repository.updatesByID.implement
     def updatesByID(self, ids, updates, configs = None):
@@ -342,13 +350,18 @@ class MongodbRepository(Repository):
             mongoUpdates = self.getUpdatesByUpdates(updates)
             models = []
             for id in ids:
-                doc = self.collection.find_one_and_update({ '_id': id }, mongoUpdates, return_document = ReturnDocument.AFTER)
+                doc = self.collection.find_one_and_update({ '_id': id }, mongoUpdates)
                 if doc:
-                    model = self.modelClass(doc)
-                    model.validate()
-                    models.append(model)
+                    # Load model, the model before updated
+                    oldModel = self.modelClass(doc)
+                    oldModel.validate()
+                    # TODO: Create the updated model by applying the updates
+                    #newModel = oldModel.clone()
+                    #newModel.update(updates)
+                    # Add
+                    models.append((oldModel, None))
             # Done
-            return UpdatesResult(models = models, count = len(models))
+            return UpdatesResult(updates = [ UpdateResult(before = x, after = y) for (x, y) in models ], count = len(models))
 
     @Repository.updatesByQuery.implement
     def updatesByQuery(self, condition, updates, configs = None):
@@ -368,20 +381,35 @@ class MongodbRepository(Repository):
             # Use fast update
             return UpdatesResult(count = self.collection.update_many(self.getQueryByCondition(condition), self.getUpdatesByUpdates(updates)).modified_count)
         else:
-            # Normal update
-            # Get ids
-            ids = [ x['_id'] for x in self.collection.find(self.getQueryByCondition(condition), projection = {}) ]
-            # Update
+            # Get updates
             mongoUpdates = self.getUpdatesByUpdates(updates)
-            models = []
-            for id in ids:
-                doc = self.collection.find_one_and_update({ '_id': id }, mongoUpdates, return_document = ReturnDocument.AFTER)
+            # Iterate updating
+            updatedIDs = []
+            models = []         # A list of (before, after)
+            while True:
+                if not models:
+                    updateCondition = condition
+                else:
+                    updateCondition = AndCondition(conditions = [
+                        condition,
+                        NotCondition(condition = KeyValuesCondition(key = '_id', values = updatedIDs))
+                        ])
+                doc = self.collection.find_one_and_update(self.getQueryByCondition(updateCondition), mongoUpdates)
                 if doc:
-                    model = self.modelClass(doc)
-                    model.validate()
-                    models.append(model)
+                    # Load model, the model before updated
+                    oldModel = self.modelClass(doc)
+                    oldModel.validate()
+                    # TODO: Create the updated model by applying the updates
+                    #newModel = oldModel.clone()
+                    #newModel.update(updates)
+                    # Add
+                    models.append((oldModel, None))
+                    updatedIDs.append(oldModel.id)
+                else:
+                    # No more
+                    break
             # Done
-            return UpdatesResult(models = models, count = len(models))
+            return UpdatesResult(updates = [ UpdateResult(before = x, after = y) for (x, y) in models ], count = len(models))
 
     @Repository.deleteByID.implement
     def deleteByID(self, id, configs = None):
@@ -400,14 +428,13 @@ class MongodbRepository(Repository):
             if self.collection.delete_one({ '_id': id }).deleted_count == 0:
                 raise ModelNotFoundError
         else:
-            doc = self.collection.find_one(id)
+            # Remove it
+            doc = self.collection.find_one_and_delete({ '_id': id })
             if not doc:
                 raise ModelNotFoundError
+            # Load model
             model = self.modelClass(doc)
             model.validate()
-            # Remove it
-            if self.collection.delete_one({ '_id': id }).deleted_count == 0:
-                raise ModelNotFoundError
             # Done
             return model
 
@@ -429,17 +456,15 @@ class MongodbRepository(Repository):
             return DeletesResult(count = self.collection.delete_many({ '_id': { '$in': ids } }).deleted_count)
         else:
             models = []
-            for doc in self.collection.find({ '_id': { '$in': ids } }):
-                model = self.modelClass(doc)
-                model.validate()
-                models.append(model)
-            # Remove it
-            removedModels = []
-            for model in models:
-                if self.collection.delete_one({ '_id': model.id }).deleted_count > 0:
-                    removedModels.append(model)
+            for id in ids:
+                doc = self.collection.find_one_and_delete({ '_id': id })
+                if doc:
+                    # Load model
+                    model = self.modelClass(doc)
+                    model.validate()
+                    models.append(model)
             # Return
-            return DeletesResult(models = removedModels, count = len(removedModels))
+            return DeletesResult(models = models, count = len(models))
 
     @Repository.deletesByQuery.implement
     def deletesByQuery(self, condition, configs = None):
@@ -460,16 +485,18 @@ class MongodbRepository(Repository):
         else:
             mongoQuery = self.getQueryByCondition(condition)
             models = []
-            for doc in self.collection.find(mongoQuery):
-                model = self.modelClass(doc)
-                model.validate()
-                models.append(model)
-            # Remove it
-            # NOTE:
-            #   For performance consideration, this method will not always correct
-            res = self.collection.delete_many(mongoQuery)
+            while True:
+                doc = self.collection.find_one_and_delete(mongoQuery)
+                if doc:
+                    # Load the deleted model
+                    model = self.modelClass(doc)
+                    model.validate()
+                    models.append(model)
+                else:
+                    # No more models
+                    break
             # Return
-            return DeletesResult(models = models, count = res.deleted_count)
+            return DeletesResult(models = models, count = len(models))
 
     @Repository.count.implement
     def count(self):

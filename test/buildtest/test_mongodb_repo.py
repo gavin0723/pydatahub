@@ -44,7 +44,9 @@ def test_mongodb_repository_basic():
     print json.dumps(fetchedModel.dump(), indent = 4)
     assert fetchedModel == model
     model.stringType = 'ANewString'
-    assert repo.replace(model) == model
+    res = repo.replace(model)
+    assert res.before.stringType == 'astring'
+    # assert res.after.stringType == 'ANewString'
     assert repo.getByID(modelID) == model
     # Update
     assert repo.updateByID(modelID, [

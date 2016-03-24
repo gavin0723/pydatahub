@@ -42,7 +42,7 @@ class Repository(object):
     """
     __metaclass__ = FeatureMetaClass
 
-    def __init__(self, modelClass, sorts):
+    def __init__(self, modelClass, sorts = None):
         """The model type
         """
         self.modelClass = modelClass
@@ -134,7 +134,7 @@ class Repository(object):
         Parameters:
             model                           The model object
         Returns:
-            The model object which is replaced, None will be returned if not replaced
+            ReplaceResult object
         Errors:
             - ModelNotFoundError will be raised if the model not found
         """
@@ -147,7 +147,7 @@ class Repository(object):
             id                              The model id
             updates                         The json updates
         Returns:
-            The updated model if updated, None will be returned if not updated
+            The UpdateResult
         Errors:
             - ModelNotFoundError will be raised if the model not found
         """
