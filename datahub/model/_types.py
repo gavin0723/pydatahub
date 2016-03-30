@@ -794,7 +794,8 @@ class ModelType(DataType):
     def __dumpvalue__(self, value, context):
         """Dump the value
         """
-        return value.dump(context)
+        if not self.isEmpty(value):
+            return value.dump(context)
 
     def __validatevalue__(self, value, context):
         """Validate the value

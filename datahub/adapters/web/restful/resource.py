@@ -123,7 +123,12 @@ class ResourceService(Service):
         body = context.request.content.data
         if body:
             # Get condition from body
-            condition = self.getQueryCondition(body)
+            query = body.pop('query', None)
+            if query:
+                try:
+                    condition = loadCondition(query)
+                except DataHubError as error:
+                    raise BadRequestError(reason = 'Invalid query [%s]' % error)
             # Check body
             if body:
                 raise BadRequestError(reason = 'Invalid body')
@@ -257,12 +262,11 @@ class FeatureEndpointHandler(object):
         """Get the query condition from params
         """
         query = params.pop('query', None)
-        if not query:
-            raise BadRequestError(reason = 'Require query')
-        try:
-            return loadCondition(query)
-        except DataHubError as error:
-            raise BadRequestError(reason = 'Invalid query [%s]' % error)
+        if query:
+            try:
+                return loadCondition(query)
+            except DataHubError as error:
+                raise BadRequestError(reason = 'Invalid query [%s]' % error)
 
     def getConditionsFromParams(self, params):
         """Get conditions from params
@@ -326,7 +330,8 @@ class QueryExistsFeatureEndpointHandler(FeatureEndpointHandler):
         # Check the kwargs
         if kwargs:
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(condition)
+            if condition:
+                conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call the feature
         return self.service.__resourcerequest__(self.location, 'query.exists', dict(condition = condition))
@@ -441,7 +446,8 @@ class QueryGetsFeatureEndpointHandler(FeatureEndpointHandler):
         if kwargs:
             # Get the condition
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(condition)
+            if condition:
+                conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call
         return self.service.__resourcerequest__(self.location, 'query.gets', dict(condition = condition, sorts = sorts, start = start, size = size))
@@ -586,7 +592,8 @@ class QueryUpdatesFeatureEndpointHandler(FeatureEndpointHandler):
             raise BadRequestError(reason = 'Invalid body')
         if kwargs:
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(condition)
+            if condition:
+                conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call the feature
         return self.service.__resourcerequest__(self.location, 'query.updates', dict(
@@ -645,7 +652,8 @@ class QueryDeletesFeatureEndpointHandler(FeatureEndpointHandler):
         # Get conditions
         if kwargs:
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(condition)
+            if condition:
+                conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call the feature
         return self.service.__resourcerequest__(self.location, 'query.deletes', dict(condition = condition, configs = configs)).dump()
@@ -691,7 +699,8 @@ class QueryCountFeatureEndpointHandler(FeatureEndpointHandler):
         # Get conditions
         if kwargs:
             conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(condition)
+            if condition:
+                conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call the feature
         return self.service.__resourcerequest__(self.location, 'query.count', dict(condition = condition))

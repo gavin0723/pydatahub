@@ -44,10 +44,13 @@ class Connection(object):
         # Use or create the request session
         self.session = session or requests.session()
 
-    def getUrl(self, paths):
+    def getUrl(self, paths = None):
         """Get the url path
         """
-        return '%s://%s:%d/%s' % (self.scheme, self.host, self.port, '/'.join([ quote_plus(x) for x in paths ]))
+        if paths:
+            return '%s://%s:%d/%s' % (self.scheme, self.host, self.port, '/'.join([ quote_plus(x) for x in paths ]))
+        else:
+            return '%s://%s:%d' % (self.scheme, self.host, self.port)
 
     def head(self, *paths, **kwargs):
         """send a head request
@@ -179,7 +182,7 @@ class ResourceConnector(object):
             return
         elif rsp.status_code != 200:
             self.handleError(rsp)
-        # Load the model
+        # Load the models
         models = [ self.modelClass(x) for x in _json.loads(rsp.content)['value'] ]
         for model in models:
             model.validate()
@@ -189,7 +192,92 @@ class ResourceConnector(object):
     def getsByQuery(self, condition = None, start = 0, size = 10, sorts = None, paths = tuple()):
         """Get by query
         """
-        raise NotImplementedError
+        _paths = list(self.paths)
+        _paths.extend(paths)
+        _paths.append(self.name)
+        _paths.append('_feature')
+        _paths.append('query.gets')
+        # Generate the payload
+        body = {
+            'start': start,
+            'size': size,
+        }
+        if condition:
+            body['query'] = condition.dump()
+        if sorts:
+            body['sorts'] = [ x.dump() for x in sorts ]
+        # Send request
+        rsp = self.connection.post(*_paths, json = body)
+        if rsp.status_code == 404:
+            return
+        elif rsp.status_code != 200:
+            self.handleError(rsp)
+        # Load the models
+        models = [ self.modelClass(x) for x in _json.loads(rsp.content)['value'] ]
+        for model in models:
+            model.validate()
+        # Done
+        return models
+
+    def create(self, model, overwrite = False, configs = None, paths = tuple()):
+        """Create a model
+        """
+        _paths = list(self.paths)
+        _paths.extend(paths)
+        _paths.append(self.name)
+        # Create the body
+        body = {
+            'model': model.dump(),
+            'overwrite': overwrite
+        }
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.post(*_paths, json = body)
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+        # Load the created model
+        model = self.modelClass(_json.loads(rsp.content)['value'])
+        model.validate()
+        # Done
+        return model
+
+    def replace(self, model, configs = None, paths = tuple()):
+        """Replace a model
+        """
+        _paths = list(self.paths)
+        _paths.extend(paths)
+        _paths.append(self.name)
+        # Create the body
+        body = {
+            'model': model.dump()
+        }
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.put(*_paths, json = body)
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+        # TODO: Load the replace result
+
+    def updateByID(self, id, updates, configs = None):
+        """Update a model
+        """
+        _paths = list(self.paths)
+        _paths.extend(paths)
+        _paths.append(self.name)
+        _paths.append(id)
+        # Create the body
+        body = {
+            'updates': [ x.dump() for x in updates ]
+        }
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.patch(*_paths)
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+        # TODO: Load the update result
 
     def watch(self, condition = None, paths = tuple()):
         """Watch the resource
@@ -200,7 +288,7 @@ class ResourceConnector(object):
         _paths.extend(paths)
         _paths.append(self.name)
         _paths.append('_watch')
-        with closing(self.connection.post(*_paths, json = condition.dump() if condition else {}, stream = True, timeout = None)) as rsp:
+        with closing(self.connection.post(*_paths, json = { 'query': condition.dumpAsRoot() } if condition else {}, stream = True, timeout = None)) as rsp:
             # Check header
             if rsp.status_code == 404:
                 return
@@ -210,8 +298,10 @@ class ResourceConnector(object):
             for line in rsp.iter_lines():
                 jsonObj = _json.loads(line.strip().decode('utf8'))
                 # It's a little tricky to load the change set
-                if jsonObj.get('model'):
-                    jsonObj['model'] = self.modelClass(jsonObj['model'])
+                if jsonObj.get('newModel'):
+                    jsonObj['newModel'] = self.modelClass(jsonObj['newModel'])
+                if jsonObj.get('oldModel'):
+                    jsonObj['oldModel'] = self.modelClass(jsonObj['oldModel'])
                 # Load the changeset
                 changeSet = ResourceWatchChangeSet(jsonObj)
                 changeSet.validate()

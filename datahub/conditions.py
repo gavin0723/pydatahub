@@ -55,6 +55,11 @@ class Condition(DataModel):
         """
         raise NotImplementedError
 
+    def dumpAsRoot(self):
+        """Dump this condition as root
+        """
+        return { self.NAME: self.dump() }
+
 class AndCondition(Condition):
     """And condition
     """
