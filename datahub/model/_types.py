@@ -95,7 +95,7 @@ class DataType(object):
         """
         metadata = instance.getMetadata() or DEFAULT_MODEL_METADATA
         if metadata.strict:
-            self.__validatevalue__(value)
+            self.__validatevalue__(value, None)
         # Good, set the value
         getattr(instance, STORE_NAME)[self.name] = value
 
