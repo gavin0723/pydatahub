@@ -323,10 +323,15 @@ class MongodbRepository(Repository):
         oldModel = self.modelClass(doc)
         oldModel.validate()
         # TODO: Create the updated model by applying the updates
+        newModel = None
         #newModel = oldModel.clone()
         #newModel.update(updates)
+        doc = self.collection.find_one(id)
+        if doc:
+            newModel = self.modelClass(doc)
+            newModel.validate()
         # Done
-        return UpdateResult(before = oldModel, after = None)
+        return UpdateResult(before = oldModel, after = newModel)
 
     @Repository.updatesByID.implement
     def updatesByID(self, ids, updates, configs = None):

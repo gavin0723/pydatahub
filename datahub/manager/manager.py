@@ -100,13 +100,18 @@ class DataManager(object):
                 elif condition and name != WATCH_RESET:
                     # We check the condition on different models (old/new) for different change type
                     if name == WATCH_CREATED or name == WATCH_PRESERVED:
-                        model = newModel
+                        if newModel and newModel.match(condition):
+                            queue.put(changeSet)
+                    elif name == WATCH_REPLACED or name == WATCH_UPDATED:
+                        # Replaced, Updated
+                        if newModel and newModel.match(condition):
+                            queue.put(changeSet)
+                        elif oldModel and oldModel.match(condition):
+                            queue.put(changeSet)
                     else:
-                        # Replaced, Updated, Deleted
-                        model = oldModel
-                    # Check if
-                    if model and model.match(condition):
-                        queue.put(changeSet)
+                        # Deleted
+                        if oldModel and oldModel.match(condition):
+                            queue.put(changeSet)
 
     def invokeFeature(self, name, params = None):
         """Invoke a feature

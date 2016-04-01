@@ -62,9 +62,15 @@ class UpdateAction(DataModel):
         """
         raise NotImplementedError
 
+    def dumpAsRoot(self):
+        """Dump this condition as root
+        """
+        return { self.NAME: self.dump() }
+
 class PushAction(UpdateAction):
     """The update action
     """
+    NAME = 'push'
     # The position
     position = IntegerType(doc = 'The push position')
     # The value
@@ -73,6 +79,7 @@ class PushAction(UpdateAction):
 class PushsAction(UpdateAction):
     """The push actions
     """
+    NAME = 'pushs'
     # The position
     position = IntegerType(doc = 'The push position')
     # The value
@@ -81,11 +88,15 @@ class PushsAction(UpdateAction):
 class PopAction(UpdateAction):
     """The pop action
     """
+    NAME = 'pop'
+    # The head
     head = BooleanType(required = True, default = True, doc = 'Pop from head or not')
 
 class SetAction(UpdateAction):
     """Set action
     """
+    NAME = 'set'
+    # The value
     value = AnyType(required = True)
 
     def execute(self, model):
@@ -96,7 +107,7 @@ class SetAction(UpdateAction):
 class ClearAction(UpdateAction):
     """Clear action
     """
-    pass
+    NAME = 'clear'
 
 ACTIONS = {
     'push':         PushAction,

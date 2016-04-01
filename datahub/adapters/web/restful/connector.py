@@ -203,7 +203,7 @@ class ResourceConnector(object):
             'size': size,
         }
         if condition:
-            body['query'] = condition.dump()
+            body['query'] = condition.dumpAsRoot()
         if sorts:
             body['sorts'] = [ x.dump() for x in sorts ]
         # Send request
@@ -260,7 +260,7 @@ class ResourceConnector(object):
             self.handleError(rsp)
         # TODO: Load the replace result
 
-    def updateByID(self, id, updates, configs = None):
+    def updateByID(self, id, updates, configs = None, paths = tuple()):
         """Update a model
         """
         _paths = list(self.paths)
@@ -269,12 +269,12 @@ class ResourceConnector(object):
         _paths.append(id)
         # Create the body
         body = {
-            'updates': [ x.dump() for x in updates ]
+            'updates': [ x.dumpAsRoot() for x in updates ]
         }
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.patch(*_paths)
+        rsp = self.connection.patch(*_paths, json = body)
         if rsp.status_code != 200:
             self.handleError(rsp)
         # TODO: Load the update result

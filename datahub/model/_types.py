@@ -504,7 +504,8 @@ class ListType(DataType):
     def __dumpvalue__(self, value, context):
         """Dump the value
         """
-        return [ self.itemType.dump(x, context) for x in value ]
+        if not value is None:
+            return [ self.itemType.dump(x, context) for x in value ]
 
     def __validatevalue__(self, value, context):
         """Validate the value

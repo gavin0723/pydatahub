@@ -435,7 +435,7 @@ class QueryGetsFeatureEndpointHandler(FeatureEndpointHandler):
         # Get query
         condition = self.getQueryCondition(body)
         # Get sorts from body
-        sorts = self.getSorts()
+        sorts = self.getSorts(body)
         # Get start & size
         start = body.pop('start', 0)
         size = body.pop('size', 10)
@@ -450,7 +450,11 @@ class QueryGetsFeatureEndpointHandler(FeatureEndpointHandler):
                 conditions.append(condition)
             condition = AndCondition(conditions = conditions)
         # Call
-        return self.service.__resourcerequest__(self.location, 'query.gets', dict(condition = condition, sorts = sorts, start = start, size = size))
+        return [ x.dump() for x in self.service.__resourcerequest__(
+                self.location,
+                'query.gets',
+                dict(condition = condition, sorts = sorts, start = start, size = size)
+                )]
 
 class StoreCreateFeatureEndpointHandler(FeatureEndpointHandler):
     """The store.create feature endpoint handler
