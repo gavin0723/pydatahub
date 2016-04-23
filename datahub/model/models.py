@@ -191,6 +191,9 @@ class DataModel(object):
     def update(self, updates):
         """Update this model by the update actions
         """
+        if not isinstance(updates, (tuple, list)):
+            updates = (updates, )
+        # Run each update action
         for update in updates:
             update.execute(self)
 
