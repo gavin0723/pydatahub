@@ -24,17 +24,44 @@ from datahub.errors import InvalidParameterError, FeatureNotEnabledError, Featur
 
 from spec import *
 from model import Resource, Metadata, ResourceWatchChangeSet
+from pipeline import FeatureInvokePipeline, FeatureInvokeHandler
+
+FEATURE_INVOKE_HANDLER_FIELD = '_datahub_datamanager_feature_invoke_handlers'
+
+class DataManagerMetaClass(type):
+    """The data manager metaclass
+    This class will set the following meta attributes of data model:
+        _datahub_datamanager_feature_invoke_handlers            The feature invoke handlers
+    """
+    def __new__(cls, name, bases, attrs):
+        """Create a new DataModel object
+        """
+        handlers = {}
+        for base in bases:
+            if hasattr(base, FEATURE_INVOKE_HANDLER_FIELD):
+                handlers.update(getattr(base, FEATURE_INVOKE_HANDLER_FIELD))
+        for key, field in attrs.iteritems():
+            if isinstance(field, FeatureInvokeHandler):
+                handlers[key] = field
+        # Add handlers to attrs
+        attrs[FEATURE_INVOKE_HANDLER_FIELD] = handlers
+        # Super
+        return type.__new__(cls, name, bases, attrs)
 
 class DataManager(object):
     """The data manager
     """
     logger = logging.getLogger('datahub.manager.dataManager')
 
-    def __init__(self, repository, enables = None, queueClass = None):
+    __metaclass__ = DataManagerMetaClass
+
+    def __init__(self, repository, enables = None, queueClass = None, pipeline = None):
         """Create a new DataManager
         Parameters:
             repository                      The repository
-            enables                         A list of enabled feature name
+            enables                         The list of enabled feature names
+            queueClass                      The waiting queue class
+            pipeline                        The pipeline
         """
         # Check the repository model
         if not issubclass(repository.modelClass, Resource):
@@ -44,6 +71,11 @@ class DataManager(object):
         self._enables = enables
         self._timestamp = time()
         self._queueClass = queueClass or Queue
+        self._pipeline = pipeline.clone() if pipeline else FeatureInvokePipeline()
+        # Update the pipelines
+        if hasattr(self, FEATURE_INVOKE_HANDLER_FIELD):
+            for handler in getattr(self, FEATURE_INVOKE_HANDLER_FIELD).itervalues():
+                self._pipeline.addHandler(handler)
         # The watching
         self._watchQueueLock = RLock()
         self._watchQueues = {}      # The key is a uid, value is (condition, queue)
@@ -116,11 +148,12 @@ class DataManager(object):
     def invokeFeature(self, name, params = None):
         """Invoke a feature
         """
-        if not name in self.repository.FEATURE_METHODS:
-            raise FeatureNotSupportedError(name)
-        # NOTE:
-        #   The manager class has the same method name with repository
-        return getattr(self, self.repository.FEATURE_METHODS[name])(**(params or {}))
+        params = params or {}
+        #if not name in self.repository.FEATURE_METHODS:
+        #    raise FeatureNotSupportedError(name)
+        # Call this feature via pipeline
+        #return self._pipeline(name, params or {}, lambda f,p,m,n: getattr(self, self.repository.FEATURE_METHODS[name])(**params), self)
+        return getattr(self.repository, self.repository.FEATURE_METHODS[name])(**params)
 
     def existByID(self, id):
         """Exist by id
@@ -553,3 +586,22 @@ class DataManager(object):
                 enabledFeatures.append(feature)
         # Done
         return enabledFeatures
+
+    @classmethod
+    def invokeHandler(cls, features):
+        """The decorator for adding an invoke handler
+        """
+        def decorator(method):
+            """The decorator method
+            """
+            cls.addInvokeHandler(features, handler)
+            return method
+        # Done
+        return decorator
+
+    @classmethod
+    def addInvokeHandler(cls, features, handler):
+        """Add an invoke handler
+        """
+        if not hasattr(cls, '__featurepipeline__'):
+            setattr(cls, '__featurepipeline__', )

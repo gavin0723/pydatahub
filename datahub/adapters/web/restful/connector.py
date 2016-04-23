@@ -132,33 +132,48 @@ class ResourceConnector(object):
     """
     logger = logging.getLogger('datahub.adapters.web.restful.resourceConnector')
 
-    def __init__(self, name, modelClass, connection, paths = None):
+    def __init__(self, path, modelClass, connection):
         """Create a new ResourceConnector
         Parameters:
-            name                            The resource name
+            path                            The resource path
             modelClass                      The resource model class
             connection                      The connection instance
-            paths                           The path list of this resource
         """
-        self.name = name
+        # Set attributes
+        self.path = path
         self.modelClass = modelClass
         self.connection = connection
-        self.paths = paths or []
 
     def handleError(self, response):
         """Handle the error response
         """
         response.raise_for_status()
 
-    def getByID(self, id, paths = tuple()):
+    def buildPaths(self, paths, kwargs):
+        """Build the paths
+        """
+        if isinstance(self.path, basestring):
+            # A string path
+            if not kwargs:
+                raise ValueError('Do not support additional path parameters')
+            # Good
+            return [ self.path ] + paths
+        elif isinstance(self.path, (list, tuple)):
+            # A list of string
+            if not kwargs:
+                raise ValueError('Do not support additional path parameters')
+            # Good
+            return list(self.path) + paths
+        elif callable(self.path):
+            # A custom builder
+            return self.path(paths, kwargs)
+        else:
+            raise ValueError('Invalid path')
+
+    def getByID(self, id, **kwargs):
         """Get resource by id
         """
-        # Send request
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
-        _paths.append(id)
-        rsp = self.connection.get(*_paths)
+        rsp = self.connection.get(*self.buildPaths([ id ], kwargs))
         if rsp.status_code == 404:
             return
         elif rsp.status_code != 200:
@@ -169,15 +184,10 @@ class ResourceConnector(object):
         # Done
         return model
 
-    def getsByID(self, ids, paths = tuple()):
+    def getsByID(self, ids, **kwargs):
         """Get resources by id
         """
-        # Send request
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
-        _paths.append(','.join(ids))
-        rsp = self.connection.get(*_paths)
+        rsp = self.connection.get(*self.buildPaths([ ','.join(ids) ], kwargs))
         if rsp.status_code == 404:
             return
         elif rsp.status_code != 200:
@@ -189,14 +199,9 @@ class ResourceConnector(object):
         # Done
         return models
 
-    def getsByQuery(self, condition = None, start = 0, size = 10, sorts = None, paths = tuple()):
+    def getsByQuery(self, condition = None, start = 0, size = 10, sorts = None, **kwargs):
         """Get by query
         """
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
-        _paths.append('_feature')
-        _paths.append('query.gets')
         # Generate the payload
         body = {
             'start': start,
@@ -207,7 +212,7 @@ class ResourceConnector(object):
         if sorts:
             body['sorts'] = [ x.dump() for x in sorts ]
         # Send request
-        rsp = self.connection.post(*_paths, json = body)
+        rsp = self.connection.post(*self.buildPaths([ '_feature', 'query.gets' ], kwargs), json = body)
         if rsp.status_code == 404:
             return
         elif rsp.status_code != 200:
@@ -219,12 +224,9 @@ class ResourceConnector(object):
         # Done
         return models
 
-    def create(self, model, overwrite = False, configs = None, paths = tuple()):
+    def create(self, model, overwrite = False, configs = None, **kwargs):
         """Create a model
         """
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
         # Create the body
         body = {
             'model': model.dump(),
@@ -233,7 +235,7 @@ class ResourceConnector(object):
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.post(*_paths, json = body)
+        rsp = self.connection.post(*self.buildPaths([], kwargs), json = body)
         if rsp.status_code != 200:
             self.handleError(rsp)
         # Load the created model
@@ -242,12 +244,9 @@ class ResourceConnector(object):
         # Done
         return model
 
-    def replace(self, model, configs = None, paths = tuple()):
+    def replace(self, model, configs = None, **kwargs):
         """Replace a model
         """
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
         # Create the body
         body = {
             'model': model.dump()
@@ -255,18 +254,14 @@ class ResourceConnector(object):
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.put(*_paths, json = body)
+        rsp = self.connection.put(*self.buildPaths([], kwargs), json = body)
         if rsp.status_code != 200:
             self.handleError(rsp)
         # TODO: Load the replace result
 
-    def updateByID(self, id, updates, configs = None, paths = tuple()):
+    def updateByID(self, id, updates, configs = None, **kwargs):
         """Update a model
         """
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
-        _paths.append(id)
         # Create the body
         body = {
             'updates': [ x.dumpAsRoot() for x in updates ]
@@ -274,21 +269,27 @@ class ResourceConnector(object):
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.patch(*_paths, json = body)
+        rsp = self.connection.patch(*self.buildPaths([], kwargs), json = body)
         if rsp.status_code != 200:
             self.handleError(rsp)
         # TODO: Load the update result
 
-    def watch(self, condition = None, paths = tuple()):
+    def deleteByID(self, id, configs = None, **kwargs):
+        """Delete model by id
+        """
+        # TODO:
+        #   Support send configs
+        rsp = self.connection.delete(*self.buildPaths([ id ], kwargs))
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+
+    def watch(self, condition = None, **kwargs):
         """Watch the resource
         Returns:
             Yield of ResourceWatchChangeSet
         """
-        _paths = list(self.paths)
-        _paths.extend(paths)
-        _paths.append(self.name)
-        _paths.append('_watch')
-        with closing(self.connection.post(*_paths, json = { 'query': condition.dumpAsRoot() } if condition else {}, stream = True, timeout = None)) as rsp:
+        # Keep watching changes
+        with closing(self.connection.post(*self.buildPaths([], kwargs), json = { 'query': condition.dump() } if condition else {}, stream = True, timeout = None)) as rsp:
             # Check header
             if rsp.status_code == 404:
                 return
