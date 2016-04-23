@@ -47,13 +47,13 @@ class ResourceLocation(object):
         params                                  The allowed parameters in this path
         features                                The enabled features for this resource location
     """
-    def __init__(self, path, params = None, features = None, enableGeneralFeature = True, enableWatch = True):
+    def __init__(self, path, params = None, features = None, enableGeneral = True, enableWatch = True):
         """Create a ResourceLocation
         """
         self.path = path if not path.endswith('/') else path[: -1]
         self.params = params
         self.features = features
-        self.enableGeneralFeature = enableGeneralFeature
+        self.enableGeneral = enableGeneral
         self.enableWatch = enableWatch
 
 class ParameterMapper(object):
@@ -91,10 +91,9 @@ class KeyValueAttributeParameterMapper(ParameterMapper):
 class ResourceService(Service):
     """The resource service
     """
-    def __init__(self, name, manager, locations, pipeline = None, serviceName = None):
+    def __init__(self, manager, locations, pipeline = None, name = None):
         """Create a new ResourceService
         """
-        self.name = name
         self.manager = manager
         self.locations = locations
         # Create the endpoints
@@ -102,7 +101,7 @@ class ResourceService(Service):
         for location in self.locations:
             endpoints.update(map(lambda (name, endpoint): ('%s:%s' % (location.path, name), endpoint), self.createEndpoints4Location(location)))
         # Super
-        super(ResourceService, self).__init__(serviceName or name, endpoints)
+        super(ResourceService, self).__init__(name, endpoints)
 
     def __resourcerequest__(self, location, feature, params = None):
         """Handle resource request
@@ -145,8 +144,12 @@ class ResourceService(Service):
         """
         # The watch feature endpoint
         if location.enableWatch:
-            yield '_watch', post(path = location.path + '/%s/_watch' % self.name)(
-                mimetype('text/plain')(container(PlainContentContainer)(endpoint()(self.watch)))
+            yield '_watch', post(path = location.path + '/_watch')(
+                mimetype('text/plain')(
+                    container(PlainContentContainer)(
+                        endpoint()(self.watch)
+                        )
+                    )
                 )
         # Create the handlers
         handlers = {}
@@ -155,7 +158,7 @@ class ResourceService(Service):
             handler = StoreExistFeatureEndpointHandler(self, location)
             handlers['store.exist'] = handler
             handlers['store.exists'] = handler
-            yield '_store.exist', head(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.exist', head(path = location.path + '/<id>')(endpoint()(handler))
         if not location.features or 'query.exists' in location.features:
             handler = QueryExistsFeatureEndpointHandler(self, location)
             handlers['query.exists'] = handler
@@ -164,11 +167,11 @@ class ResourceService(Service):
             handler = StoreGetFeatureEndpointHandler(self, location)
             handlers['store.get'] = handler
             handlers['store.gets'] = handler
-            yield '_store.get', get(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.get', get(path = location.path + '/<id>')(endpoint()(handler))
         if not location.features or 'store.getall' in location.features:
             handler = StoreGetAllFeatureEndpointHandler(self, location)
             handlers['store.getall'] = handler
-            yield '_store.getall', get(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.getall', get(path = location.path)(endpoint()(handler))
         if not location.features or 'query.gets' in location.features:
             handler = QueryGetsFeatureEndpointHandler(self, location)
             handlers['query.gets'] = handler
@@ -176,18 +179,18 @@ class ResourceService(Service):
         if not location.features or 'store.create' in location.features:
             handler = StoreCreateFeatureEndpointHandler(self, location)
             handlers['store.create'] = handler
-            yield '_store.create', post(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.create', post(path = location.path)(endpoint()(handler))
         # The replace feature
         if not location.features or 'store.replace' in location.features:
             handler = StoreReplaceFeatureEndpointHandler(self, location)
             handlers['store.replace'] = handler
-            yield '_store.replace', put(path = location.path + '/%s' % self.name)(endpoint()(handler))
+            yield '_store.replace', put(path = location.path)(endpoint()(handler))
         # The update feature
         if not location.features or 'store.update' in location.features or 'store.updates' in location.features:
             handler = StoreUpdateFeatureEndpointHandler(self, location)
             handlers['store.update'] = handler
             handlers['store.updates'] = handler
-            yield '_store.update', patch(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.update', patch(path = location.path + '/<id>')(endpoint()(handler))
         if not location.features or 'query.updates' in location.features:
             handler = QueryUpdatesFeatureEndpointHandler(self, location)
             handlers['query.updates'] = handler
@@ -196,7 +199,7 @@ class ResourceService(Service):
             handler = StoreDeleteFeatureEndpointHandler(self, location)
             handlers['store.delete'] = handler
             handlers['store.deletes'] = handler
-            yield '_store.delete', delete(path = location.path + '/%s/<id>' % self.name)(endpoint()(handler))
+            yield '_store.delete', delete(path = location.path + '/<id>')(endpoint()(handler))
         if not location.features or 'query.deletes' in location.features:
             handler = QueryDeletesFeatureEndpointHandler(self, location)
             handlers['query.deletes'] = handler
@@ -211,8 +214,12 @@ class ResourceService(Service):
             handler = QueryCountFeatureEndpointHandler(self, location)
             handlers['query.count'] = handler
         # The general feature endpoint
-        if location.enableGeneralFeature:
-            yield '_feature', post(path = location.path + '/%s/_feature/<featureName>' % self.name)(endpoint()(GeneralFeatureEndpointHandler(self, location, handlers)))
+        if location.enableGeneral:
+            yield '_feature', post(path = location.path + '/_feature/<featureName>')(
+                endpoint()(
+                    GeneralFeatureEndpointHandler(self, location, handlers)
+                    )
+                )
 
 class FeatureEndpointHandler(object):
     """The feature endpoint handler

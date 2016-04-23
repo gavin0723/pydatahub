@@ -37,14 +37,14 @@ class MongodbRepository(Repository):
             raise ValueError('Require namespace in the model [%s] metadata' % modelClass.__name__)
         self.collection = database[metadata.namespace]
         # Get the indices
-        if metadata.indices:
-            self.collection.create_indexes([
-                IndexModel(
-                    [ (x, ASCENDING) for x in idx.keys ],
-                    unique = idx.unique,
-                    sparse = idx.sparse
-                ) for idx in metadata.indices
-            ])
+        if metadata.indices or metadata.expires:
+            indices = []
+            if metadata.indices:
+                indices.extend([ IndexModel([ (x, ASCENDING) for x in idx.keys ], unique = idx.unique, sparse = idx.sparse) for idx in metadata.indices ])
+            if metadata.expires:
+                indices.extend([ IndexModel([ (x, ASCENDING) ], expireAfterSeconds = 0) for x in metadata.expires ])
+            # Create the indices
+            self.collection.create_indexes(indices)
 
     def __getquerybycondition__(self, condition):
         """Get query by condition

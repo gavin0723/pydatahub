@@ -41,7 +41,17 @@ class ModelMetadata(object):
     :param autoInitialize:
         The model will assign all default values to the fields which haven't given any data when creating the model if true.
     """
-    def __init__(self, namespace = None, strict = False, none4Unassigned = True, unknownField = None, continueOnError = True, autoInitialize = True, indices = None):
+    def __init__(
+        self,
+        namespace = None,
+        strict = False,
+        none4Unassigned = True,
+        unknownField = None,
+        continueOnError = True,
+        autoInitialize = True,
+        indices = None,
+        expires = None
+        ):
         """Create a new ModelMetadata
         """
         self.namespace = namespace
@@ -53,6 +63,7 @@ class ModelMetadata(object):
         self.continueOnError = continueOnError
         self.autoInitialize = autoInitialize
         self.indices = indices
+        self.expires = expires
 
     @staticmethod
     def getDefault():

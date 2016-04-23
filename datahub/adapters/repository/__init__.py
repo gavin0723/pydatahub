@@ -10,3 +10,5 @@
 """
 
 from _mongodb import MongodbRepository
+
+__all__ = [ 'MongodbRepository' ]

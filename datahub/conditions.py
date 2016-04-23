@@ -20,7 +20,7 @@ def loadCondition(value):
     k, v = value.keys()[0], value.values()[0]
     if not k in CONDITIONS:
         raise BadValueError('Condition [%s] not found' % k)
-    return CONDITIONS[k](v)
+    return CONDITIONS[k](value)
 
 class ConditionType(ModelType):
     """The condition data type
@@ -48,6 +48,16 @@ class ConditionType(ModelType):
 class Condition(DataModel):
     """The condition
     """
+    def __init__(self, raw = None, **kwargs):
+        """Create a new Condition
+        """
+        if raw:
+            if len(raw) != 1:
+                raise ValueError('The length of the dict of condition must be 1')
+            super(Condition, self).__init__(raw.values()[0], **kwargs)
+        else:
+            super(Condition, self).__init__(raw, **kwargs)
+
     def check(self, model):
         """Check if the model satisfy the condition
         Returns:
@@ -55,10 +65,13 @@ class Condition(DataModel):
         """
         raise NotImplementedError
 
-    def dumpAsRoot(self):
-        """Dump this condition as root
+    def dump(self, context = None):
+        """Dump this condition
         """
-        return { self.NAME: self.dump() }
+        # Dump the values
+        rawDumpValue = super(Condition, self).dump(context)
+        # Wrap the raw dump value by name
+        return { self.NAME: rawDumpValue }
 
 class AndCondition(Condition):
     """And condition

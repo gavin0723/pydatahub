@@ -17,7 +17,9 @@ from _types import DataType
 class DataModelMetaClass(type):
     """The data model meta class
     This class will set the following meta attributes of data model:
-        _datahub_datamodel_attrs            The attributes
+        _datahub_datamodel_fields           The field definitions
+        _datahub_datamodel_metadata         The metadata definition
+        _datahub_datamodel_store            The stored values
     """
     def __new__(cls, name, bases, attrs):
         """Create a new DataModel object
