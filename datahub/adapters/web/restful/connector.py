@@ -48,7 +48,7 @@ class Connection(object):
         """Get the url path
         """
         if paths:
-            return '%s://%s:%d/%s' % (self.scheme, self.host, self.port, '/'.join([ quote_plus(x) for x in paths ]))
+            return '%s://%s:%d/%s' % (self.scheme, self.host, self.port, '/'.join([ quote_plus(x) for x in paths if x ]))
         else:
             return '%s://%s:%d' % (self.scheme, self.host, self.port)
 
@@ -132,16 +132,15 @@ class ResourceConnector(object):
     """
     logger = logging.getLogger('datahub.adapters.web.restful.resourceConnector')
 
-    def __init__(self, path, modelClass, connection):
+    def __init__(self, modelClass, path, connection):
         """Create a new ResourceConnector
         Parameters:
-            path                            The resource path
             modelClass                      The resource model class
+            path                            The resource path
             connection                      The connection instance
         """
-        # Set attributes
-        self.path = path
         self.modelClass = modelClass
+        self.path = path
         self.connection = connection
 
     def handleError(self, response):
@@ -297,6 +296,9 @@ class ResourceConnector(object):
                 self.handleError(rsp)
             # Iterate reading content
             for line in rsp.iter_lines():
+                if not line:
+                    # An empty line, used for keep-alive
+                    continue
                 jsonObj = _json.loads(line.strip().decode('utf8'))
                 # It's a little tricky to load the change set
                 if jsonObj.get('newModel'):
