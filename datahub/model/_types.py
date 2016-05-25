@@ -690,7 +690,10 @@ class DictType(DataType):
     def __dumpvalue__(self, value, context):
         """Dump the value
         """
-        return dict(map(lambda (k, v): (k, self.itemType.dump(v, context)), value.iteritems()))
+        if not value is None:
+            return dict(map(lambda (k, v): (k, self.itemType.dump(v, context)), value.iteritems()))
+        else:
+            return
 
     def __validatevalue__(self, value, context):
         """Validate the value
