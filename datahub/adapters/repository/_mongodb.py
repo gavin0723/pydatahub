@@ -16,7 +16,7 @@ from itertools import chain
 from pymongo import IndexModel, ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from datahub.model import DumpContext, DEFAULT_MODEL_METADATA
+from datahub.model import DumpContext
 from datahub.errors import BadValueError, DuplicatedKeyError, ModelNotFoundError
 from datahub.updates import PushAction, PushsAction, PopAction, SetAction, ClearAction
 from datahub.conditions import AndCondition, OrCondition, NotCondition, KeyValueCondition, KeyValuesCondition, ExistCondition, \
@@ -31,7 +31,9 @@ class MongodbRepository(Repository):
         """
         super(MongodbRepository, self).__init__(modelClass, sorts)
         # Check the metadata
-        metadata = modelClass.getMetadata() or DEFAULT_MODEL_METADATA
+        metadata = modelClass.getMetadata()
+        if not metadata:
+            raise ValueError('Require metadata of the model [%s]' % modelClass.__name__)
         # Get the collection
         if not metadata.namespace:
             raise ValueError('Require namespace in the model [%s] metadata' % modelClass.__name__)

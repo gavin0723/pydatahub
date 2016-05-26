@@ -9,10 +9,15 @@
 
 """
 
+import os
+
+from uuid import uuid4
+from binascii import b2a_hex
+
 from datahub.errors import DataModelError, NestedDataModelError, UnknownFieldError, MissingRequiredFieldError
 
 from spec import *
-from _types import DataType
+from _types import DataType, StringType
 
 class DataModelMetaClass(type):
     """The data model meta class
@@ -266,3 +271,27 @@ class DataModel(object):
         """Set metadata
         """
         setattr(cls, METADATA_NAME, metadata)
+
+def randomID(length = 32):
+    """Get a random id
+    """
+    if length < 16:
+        raise ValueError('Length cannot be smaller than 16')
+    return b2a_hex(os.urandom(length - 16) + uuid4().bytes)
+
+class IDDataModel(DataModel):
+    """The data model with _id and id pre-defined
+    """
+    _id = StringType(required = True, default = randomID, doc = 'The identity string')
+
+    @property
+    def id(self):
+        """Get model id
+        """
+        return self._id
+
+    @id.setter
+    def id(self, value):
+        """Set the model id
+        """
+        self._id = value

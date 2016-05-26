@@ -15,9 +15,10 @@
 
 """
 
-from datahub.model import DataModel, IDDataModel, StringType, FloatType, DatetimeType, DictType, ModelType
+from models import DataModel, IDDataModel
+from _types import StringType, FloatType, DatetimeType, DictType, ModelType
 
-class Metadata(DataModel):
+class ResourceMetadata(DataModel):
     """The metadata
     """
     # The create time
@@ -33,7 +34,7 @@ class Resource(IDDataModel):
     """The resource
     """
     # The metadata
-    metadata = ModelType(Metadata, doc = 'The metadata of the resource')
+    metadata = ModelType(ResourceMetadata, doc = 'The metadata of the resource')
 
 class ResourceWatchChangeSet(DataModel):
     """The resource watch change set
