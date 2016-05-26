@@ -207,7 +207,7 @@ class ResourceConnector(object):
             'size': size,
         }
         if condition:
-            body['query'] = condition.dumpAsRoot()
+            body['query'] = condition.dump()
         if sorts:
             body['sorts'] = [ x.dump() for x in sorts ]
         # Send request
@@ -296,10 +296,11 @@ class ResourceConnector(object):
                 self.handleError(rsp)
             # Iterate reading content
             for line in rsp.iter_lines():
+                line = line.strip()
                 if not line:
                     # An empty line, used for keep-alive
                     continue
-                jsonObj = _json.loads(line.strip().decode('utf8'))
+                jsonObj = _json.loads(line.decode('utf8'))
                 # It's a little tricky to load the change set
                 if jsonObj.get('newModel'):
                     jsonObj['newModel'] = self.modelClass(jsonObj['newModel'])

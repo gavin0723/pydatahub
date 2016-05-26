@@ -33,12 +33,12 @@ from unifiedrpc.errors import BadRequestError, NotFoundError
 from unifiedrpc.adapters.web import head, get, post, put, patch, delete
 from unifiedrpc.content.container import PlainContentContainer
 
+from datahub.sorts import *
 from datahub.utils import json
 from datahub.model import DataModel
-from datahub.conditions import *
-from datahub.updates import *
-from datahub.sorts import *
 from datahub.errors import DataHubError, ModelNotFoundError
+from datahub.updates import *
+from datahub.conditions import *
 
 class ResourceLocation(object):
     """The resource location
@@ -134,8 +134,13 @@ class ResourceService(Service):
         else:
             condition = None
         # Start watch
-        for changeSet in self.manager.watch(condition):
-            yield '%s\n' % json.dumps(changeSet.dump(), ensure_ascii = False).encode('utf8')
+        for changeSet in self.manager.watch(condition, keepAlive = True):
+            if changeSet:
+                # Return change set
+                yield '%s\n' % json.dumps(changeSet.dump(), ensure_ascii = False).encode('utf8')
+            else:
+                # Keep alive
+                yield '\n'
 
     def createEndpoints4Location(self, location):
         """Create the endpoint for a feature

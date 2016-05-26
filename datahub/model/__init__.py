@@ -9,29 +9,11 @@
 
 """
 
-from uuid import uuid4
-
-from spec import *
-from models import DataModel
+from spec import nullValue, ModelMetadata, ModelIndex, DumpContext
+from models import DataModel, IDDataModel
 from _types import DataType, StringType, IntegerType, FloatType, BooleanType, DatetimeType, DateType, TimeType, TimeDeltaType, \
     ListType, SetType, DictType, ModelType, DynamicModelType, AnyType
-
-class IDDataModel(DataModel):
-    """The data model with _id and id pre-defined
-    """
-    _id = StringType(required = True, default = lambda: str(uuid4()), doc = 'The identity string')
-
-    @property
-    def id(self):
-        """Get model id
-        """
-        return self._id
-
-    @id.setter
-    def id(self, value):
-        """Set the model id
-        """
-        self._id = value
+from resource import ResourceMetadata, Resource, ResourceWatchChangeSet
 
 def metadata(**kwargs):
     """The decorate method to set metadata to data model
@@ -42,3 +24,12 @@ def metadata(**kwargs):
         cls.setMetadata(ModelMetadata(**kwargs))
         return cls
     return decorator
+
+__all__ = [
+    'nullValue', 'ModelMetadata', 'ModelIndex', 'DumpContext',
+    'DataModel', 'IDDataModel',
+    'DataType', 'StringType', 'IntegerType', 'FloatType', 'BooleanType', 'DatetimeType', 'DateType', 'TimeType', 'TimeDeltaType',
+    'ListType', 'SetType', 'DictType', 'ModelType', 'DynamicModelType', 'AnyType',
+    'ResourceMetadata', 'Resource', 'ResourceWatchChangeSet',
+    'metadata'
+    ]

@@ -13,7 +13,7 @@ import logging
 
 from time import time
 from uuid import uuid4
-from Queue import Queue
+from Queue import Queue, Empty as QueueEmptyError
 from datetime import datetime
 from threading import RLock
 
@@ -22,8 +22,9 @@ from datahub.repository import Repository
 from datahub.conditions import AndCondition, LargerCondition
 from datahub.errors import InvalidParameterError, FeatureNotEnabledError, FeatureNotSupportedError
 
+from datahub.model import Resource, ResourceMetadata, ResourceWatchChangeSet
+
 from spec import *
-from model import Resource, Metadata, ResourceWatchChangeSet
 from pipeline import FeatureInvokePipeline, FeatureInvokeHandler
 
 FEATURE_INVOKE_HANDLER_FIELD = '_datahub_datamanager_feature_invoke_handlers'
@@ -55,7 +56,7 @@ class DataManager(object):
 
     __metaclass__ = DataManagerMetaClass
 
-    def __init__(self, repository, enables = None, queueClass = None, pipeline = None):
+    def __init__(self, repository, enables = None, queueClass = None, queueEmptyError = None, pipeline = None):
         """Create a new DataManager
         Parameters:
             repository                      The repository
@@ -71,6 +72,7 @@ class DataManager(object):
         self._enables = enables
         self._timestamp = time()
         self._queueClass = queueClass or Queue
+        self._queueEmptyError = queueEmptyError or QueueEmptyError
         self._pipeline = pipeline.clone() if pipeline else FeatureInvokePipeline()
         # Update the pipelines
         if hasattr(self, FEATURE_INVOKE_HANDLER_FIELD):
@@ -262,7 +264,7 @@ class DataManager(object):
             raise InvalidParameterError(reason = 'Invalid parameter type [model]')
         # Set the model metadata
         if not model.metadata:
-            model.metadata = Metadata()
+            model.metadata = ResourceMetadata()
         model.metadata.createTime = datetime.now()
         model.metadata.timestamp = time()
         # Create the model
@@ -289,7 +291,7 @@ class DataManager(object):
             raise InvalidParameterError(reason = 'Invalid parameter type [model]')
         # Set the model metadata
         if not model.metadata:
-            model.metadata = Metadata()
+            model.metadata = ResourceMetadata()
         ts = time()
         model.metadata.createTime = datetime.now()
         model.metadata.timestamp = ts
@@ -527,10 +529,14 @@ class DataManager(object):
         # Count
         return self.repository.countByQuery(condition)
 
-    def watch(self, condition = None):
+    def watch(self, condition = None, keepAlive = False, keepAliveTimeout = 10):
         """Watch the changes
         Parameters:
             condition                       The condition used to watch
+            keepAlive                       Keep alive or not
+            keepAliveTimeout                The timeout seconds for keep alive
+        NOTE:
+            If keep alive is enabled, this method will yield None as result in case of keep alive
         Returns:
             Yield of ResourceWatchChangeSet
         """
@@ -558,7 +564,14 @@ class DataManager(object):
                 yield ResourceWatchChangeSet(name = WATCH_PRESERVED, timestamp = model.metadata.timestamp, modelID = model.id, oldModel = None, newModel = model)
             # Wait for the queue
             while True:
-                changeSet = queue.get()
+                try:
+                    changeSet = queue.get(timeout = keepAliveTimeout if keepAliveTimeout else None)
+                except Exception as error:
+                    if isinstance(error, QueueEmptyError):
+                        # No more available changes, send keep alive data
+                        yield
+                    else:
+                        raise
                 # NOTE: Current implementation may cause the 'DELETE' sent to the watcher even if the models has already deletes before scanning the database.
                 #       So, the watcher should deal with the case that the deleted models are not existed
                 # NOTE: Here, we MUST use >= to check the timestamp since updates/deletes actions will have the exactly same timestamp
