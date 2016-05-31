@@ -73,34 +73,87 @@ class FeatureNotEnabledError(DataHubError):
 class DuplicatedKeyError(DataHubError):
     """The duplicated key error
     """
-    def __init__(self, message):
+    def __init__(self, message, key = None):
         """Create a new DuplicatedKeyError
         """
+        self.key = key
         self.message = message
+
+    def __str__(self):
+        """Convert to string
+        """
+        return 'Key [%s] Message [%s]' % (key, message)
 
 class ModelNotFoundError(DataHubError):
     """The model not found error
     """
     pass
 
+class FieldNotDumpError(DataHubError):
+    """The field is not dumped
+    """
+    pass
+
+class WatchTimeoutError(DataHubError):
+    """The watch is timed out
+    """
+
+class WatchResetError(DataHubError):
+    """The watch is reset (Some untracable changes happened)
+    """
+
+class QueryNotMatchError(DataHubError):
+    """The query is not matched
+    """
+    def __init__(self, name, nextPath, type = None):
+        """Create a new QueryNotMatchError
+        """
+        self.name = name
+        self.nextPath = nextPath
+        self.type = type
+
+    def __str__(self):
+        """Convert to string
+        """
+        return 'Name [%s] Next [%s] Type [%s]' % (self.name, self.nextPath, type(self.type).__name__ if self.type else 'N/A')
+
+class UnqueryableValueError(DataHubError):
+    """Indicates the value is not queryable
+    """
+
 class DataModelError(DataHubError):
     """The data model error
     """
     pass
 
-class NestedDataModelError(DataModelError):
-    """The nested validation error
+class CompoundDataModelError(DataModelError):
+    """The compound data model error
     """
-    def __init__(self, errors, context = None):
-        """Create new NestedDataModelError
+    def __init__(self, errors, message = None):
+        """Create new CompoundDataModelError
         """
         self.errors = errors
-        self.context = context
+        self.message = message
 
     def __str__(self):
         """To string
         """
-        return 'Nested Errors: [%s] Context [%s]' % (self.errors, self.context)
+        return 'Compound Message [%s] Errors [%s]' % (self.message or 'N/A', ','.join([ repr(x) for x in self.errors ]))
+
+class NestedDataModelError(DataModelError):
+    """The nested validation error
+    """
+    def __init__(self, key, error, message = None):
+        """Create new NestedDataModelError
+        """
+        self.key = key
+        self.error = error
+        self.message = message
+
+    def __str__(self):
+        """To string
+        """
+        return 'Nested Error Key [%s] Message [%s] Inner Error [%s]' % (self.key, self.message or 'N/A', repr(self.error))
 
 class ValueConversionError(DataModelError):
     """Value conversion error

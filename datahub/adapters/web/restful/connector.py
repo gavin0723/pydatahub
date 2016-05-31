@@ -12,97 +12,93 @@
 import logging
 
 from urllib import quote_plus
-from contextlib import closing
 
 import requests
 
+from datahub.spec import *
 from datahub.utils import json as _json
-from datahub.manager import ResourceWatchChangeSet
+from datahub.errors import ModelNotFoundError, DuplicatedKeyError
 
 class Connection(object):
     """The connector connection
     """
-    def __init__(self, host, port, scheme = 'http', cert = None, key = None, verify = None, session = None):
-        """Create a new Connection
-        Parameters:
-            host                            The restful web service host
-            port                            The restful web service port
-            scheme                          The request scheme
-            cert                            The certificate file path in PEM format when using ssl client certificate authentication
-            key                             The private key file path in PEM format when using ssl client certificate authentication
-            verify                          Whether verify the service certificate or not if using https or the path to the certificate
-            session                         The request session object
-        """
-        self.host = host
-        self.port = port
-        if scheme != 'http' and scheme != 'https':
-            raise ValueError('Invalid scheme [%s], could either be http or https' % scheme)
-        self.scheme = scheme
-        self.cert = cert
-        self.key = key
-        self.verify = verify
-        # Use or create the request session
-        self.session = session or requests.session()
-
-    def getUrl(self, paths = None):
-        """Get the url path
-        """
-        if paths:
-            return '%s://%s:%d/%s' % (self.scheme, self.host, self.port, '/'.join([ quote_plus(x) for x in paths if x ]))
-        else:
-            return '%s://%s:%d' % (self.scheme, self.host, self.port)
-
-    def head(self, *paths, **kwargs):
+    def head(self, path, **kwargs):
         """send a head request
         Returns:
             requests.Response object
         """
-        return self.request('HEAD', self.getUrl(paths), **kwargs)
+        return self.request('HEAD', path, **kwargs)
 
-    def get(self, *paths, **kwargs):
+    def get(self, path, **kwargs):
         """Send a get request
         Returns:
             requests.Response object
         """
-        return self.request('GET', self.getUrl(paths), **kwargs)
+        return self.request('GET', path, **kwargs)
 
-    def put(self, *paths, **kwargs):
+    def put(self, path, **kwargs):
         """Send a put request
         Returns:
             requests.Response object
         """
-        return self.request('PUT', self.getUrl(paths), **kwargs)
+        return self.request('PUT', path, **kwargs)
 
-    def post(self, *paths, **kwargs):
+    def post(self, path, **kwargs):
         """Send a post request
         Returns:
             requests.Response object
         """
-        return self.request('POST', self.getUrl(paths), **kwargs)
+        return self.request('POST', path, **kwargs)
 
-    def patch(self, *paths, **kwargs):
+    def patch(self, path, **kwargs):
         """send a patch request
         Returns:
             requests.Response object
         """
-        return self.request('PATCH', self.getUrl(paths), **kwargs)
+        return self.request('PATCH', path, **kwargs)
 
-    def delete(self, *paths, **kwargs):
+    def delete(self, path, **kwargs):
         """send a delete request
         Returns:
             requests.Response object
         """
-        return self.request('DELETE', self.getUrl(paths), **kwargs)
+        return self.request('DELETE', path, **kwargs)
 
-    def request(self, method, url, json = None, **kwargs):
+    def request(self, method, path, json = None, **kwargs):
         """Send a request
         Parameters:
             method                                  The request method
-            url                                     The request url
+            path                                    The request path
             json                                    The json object to send as payload
         Returns:
             requests.Response object
         """
+        raise NotImplementedError
+
+class HttpConnection(Connection):
+    """The http connection based on requests
+    """
+    def __init__(self, host, port, session = None):
+        """Create a new Connection
+        Parameters:
+            host                            The restful web service host
+            port                            The restful web service port
+            session                         The request session object
+        """
+        self.host = host
+        self.port = port
+        self.session = session or requests.Session()
+
+    def request(self, method, path, json = None, **kwargs):
+        """Send a request
+        Parameters:
+            method                                  The request method
+            path                                    The request path
+            json                                    The json object to send as payload
+        Returns:
+            requests.Response object
+        """
+        url = 'http://%s:%d/%s' % (self.host, self.port, path or '')
         # Do json serialize if json
         if json:
             if kwargs.get('data'):
@@ -114,33 +110,70 @@ class Connection(object):
                 kwargs['headers']['Content-Type'] = 'application/json; charset=utf-8'
             else:
                 kwargs['headers'] = { 'Content-Type': 'application/json; charset=utf-8' }
-        # Send request
-        if self.scheme == 'http':
-            # Http
-            return self.session.request(method, url, **kwargs)
-        else:
-            # Https
-            if not 'verify' in kwargs and not self.verify is None:
-                kwargs['verify'] = verify
-            if not 'cert' in kwargs and self.cert and self.key:
-                kwargs['cert'] = (self.cert, self.key)
-            # Send
-            return self.session.request(method, url, **kwargs)
+        # Send
+        return self.session.request(method, url, **kwargs)
+
+class HttpsConnection(Connection):
+    """The https connection based on requests
+    """
+    def __init__(self, host, port, cert = None, key = None, verify = True, session = None):
+        """Create a new Connection
+        Parameters:
+            host                            The restful web service host
+            port                            The restful web service port
+            cert                            The certificate file path in PEM format when using ssl client certificate authentication
+            key                             The private key file path in PEM format when using ssl client certificate authentication
+            verify                          Whether verify the service certificate or not
+            session                         The request session object
+        """
+        self.host = host
+        self.port = port
+        self.cert = cert
+        self.key = key
+        self.verify = verify
+        self.session = session or requests.Session()
+
+    def request(self, method, path, json = None, **kwargs):
+        """Send a request
+        Parameters:
+            method                                  The request method
+            path                                    The request path
+            json                                    The json object to send as payload
+        Returns:
+            requests.Response object
+        """
+        url = 'http://%s:%d/%s' % (self.host, self.port, path or '')
+        # Do json serialize if json
+        if json:
+            if kwargs.get('data'):
+                raise ValueError('Cannot set json and data at the same time')
+            # Serialize json to data
+            kwargs['data'] = _json.dumps(json, ensure_ascii = False).encode('utf8')
+            # Set header
+            if kwargs.get('headers'):
+                kwargs['headers']['Content-Type'] = 'application/json; charset=utf-8'
+            else:
+                kwargs['headers'] = { 'Content-Type': 'application/json; charset=utf-8' }
+        # Set https config
+        if not 'verify' in kwargs and not self.verify is None:
+            kwargs['verify'] = verify
+        if not 'cert' in kwargs and self.cert and self.key:
+            kwargs['cert'] = (self.cert, self.key)
+        # Send
+        return self.session.request(method, url, **kwargs)
 
 class ResourceConnector(object):
     """The resource connector
     """
     logger = logging.getLogger('datahub.adapters.web.restful.resourceConnector')
 
-    def __init__(self, modelClass, path, connection):
+    def __init__(self, cls, connection):
         """Create a new ResourceConnector
         Parameters:
-            modelClass                      The resource model class
-            path                            The resource path
+            cls                             The resource model class
             connection                      The connection instance
         """
-        self.modelClass = modelClass
-        self.path = path
+        self.cls = cls
         self.connection = connection
 
     def handleError(self, response):
@@ -148,103 +181,95 @@ class ResourceConnector(object):
         """
         response.raise_for_status()
 
-    def buildPaths(self, paths, kwargs):
-        """Build the paths
+    def getFeatureUrl(self, url, feature):
+        """Get the feature url
         """
-        if isinstance(self.path, basestring):
-            # A string path
-            if not kwargs:
-                raise ValueError('Do not support additional path parameters')
-            # Good
-            return [ self.path ] + paths
-        elif isinstance(self.path, (list, tuple)):
-            # A list of string
-            if not kwargs:
-                raise ValueError('Do not support additional path parameters')
-            # Good
-            return list(self.path) + paths
-        elif callable(self.path):
-            # A custom builder
-            return self.path(paths, kwargs)
+        if url.endswith('/'):
+            return '%s_feature/%s' % (url, feature)
         else:
-            raise ValueError('Invalid path')
+            return '%s/_feature/%s' % (url, feature)
 
-    def getByID(self, id, **kwargs):
-        """Get resource by id
+    def exist(self, url, id = None, query = None, configs = None):
+        """Exist
         """
-        rsp = self.connection.get(*self.buildPaths([ id ], kwargs))
+        if not id is None and query:
+            raise ValueError('Cannot both specify id and query')
+        # Create body
+        body = {}
+        if not id is None:
+            body['id'] = id
+        if query:
+            body['query'] = query.dump()
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.post(self.getFeatureUrl(url, FEATURE_QUERY_EXIST), json = body)
+        # Handle response
+        if rsp.status_code == 404:
+            return False
+        elif rsp.status_code == 200:
+            return True
+        else:
+                self.handleError(rsp)
+
+    def get(self, url, id = None, query = None, start = 0, size = 0, sorts = None, configs = None, cls = None):
+        """Get
+        Parameters:
+            url                                 The request url
+            id                                  The id or a list / tuple of ids or None
+            query                               The Condition object or None
+        Returns:
+            - For single id get request, returns None or A model object
+            - Otherwise returns a list of models (May be empty)
+        """
+        if not id is None and query:
+            raise ValueError('Cannot both specify id and query')
+        # Create body
+        body = {}
+        if not id is None:
+            body['id'] = id
+        if query:
+            body['query'] = query.dump()
+        if not start is None:
+            body['start'] = start
+        if not size is None:
+            body['size'] = size
+        if sorts:
+            body['sorts'] = [ x.dump() for x in sorts ]
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.get(self.getFeatureUrl(url, FEATURE_QUERY_GET), json = body)
+        # Handle response
         if rsp.status_code == 404:
             return
         elif rsp.status_code != 200:
             self.handleError(rsp)
         # Load the model
-        model = self.modelClass(_json.loads(rsp.content)['value'])
-        model.validate()
-        # Done
-        return model
-
-    def getsByID(self, ids, **kwargs):
-        """Get resources by id
-        """
-        rsp = self.connection.get(*self.buildPaths([ ','.join(ids) ], kwargs))
-        if rsp.status_code == 404:
-            return
-        elif rsp.status_code != 200:
-            self.handleError(rsp)
-        # Load the models
-        models = [ self.modelClass(x) for x in _json.loads(rsp.content)['value'] ]
-        for model in models:
+        cls = cls or self.cls
+        raw = _json.loads(rsp.content)['value']
+        if isinstance(raw, list):
+            # A list of result
+            models = [ cls.load(x) for x in raw ]
+            for model in models:
+                model.validate()
+            # Done
+            return models
+        else:
+            # Single result
+            model = cls.load(raw)
             model.validate()
-        # Done
-        return models
+            # Done
+            return model
 
-    def getsByQuery(self, condition = None, start = 0, size = 10, sorts = None, **kwargs):
-        """Get by query
-        """
-        # Generate the payload
-        body = {
-            'start': start,
-            'size': size,
-        }
-        if condition:
-            body['query'] = condition.dump()
-        if sorts:
-            body['sorts'] = [ x.dump() for x in sorts ]
-        # Send request
-        rsp = self.connection.post(*self.buildPaths([ '_feature', 'query.gets' ], kwargs), json = body)
-        if rsp.status_code == 404:
-            return
-        elif rsp.status_code != 200:
-            self.handleError(rsp)
-        # Load the models
-        models = [ self.modelClass(x) for x in _json.loads(rsp.content)['value'] ]
-        for model in models:
-            model.validate()
-        # Done
-        return models
-
-    def create(self, model, overwrite = False, configs = None, **kwargs):
+    def create(self, url, model, configs = None):
         """Create a model
-        """
-        # Create the body
-        body = {
-            'model': model.dump(),
-            'overwrite': overwrite
-        }
-        if configs:
-            body['configs'] = configs
-        # Send request
-        rsp = self.connection.post(*self.buildPaths([], kwargs), json = body)
-        if rsp.status_code != 200:
-            self.handleError(rsp)
-        # Load the created model
-        model = self.modelClass(_json.loads(rsp.content)['value'])
-        model.validate()
-        # Done
-        return model
-
-    def replace(self, model, configs = None, **kwargs):
-        """Replace a model
+        Parameters:
+            url                             The request url
+            model                           The model object
+            configs                         A dict of configs
+        Returns:
+            Nothing
         """
         # Create the body
         body = {
@@ -253,60 +278,118 @@ class ResourceConnector(object):
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.put(*self.buildPaths([], kwargs), json = body)
-        if rsp.status_code != 200:
+        rsp = self.connection.post(url, json = body)
+        # Handle response
+        if rsp.status_code == 400:
+            # Try to decode the error
+            try:
+                if _json.loads(rsp.content)['error']['code'] == ERROR_DUPLICATED_KEY:
+                    raise DuplicatedKeyError('Duplicate key found when creating model', model.id)
+            except DuplicatedKeyError:
+                raise
+            else:
+                self.handleError(rsp)
+        elif rsp.status_code != 200:
             self.handleError(rsp)
-        # TODO: Load the replace result
+        # Done
 
-    def updateByID(self, id, updates, configs = None, **kwargs):
-        """Update a model
+    def replace(self, url, model, configs = None):
+        """Replace
+        Returns:
+            Nothing
         """
         # Create the body
         body = {
-            'updates': [ x.dumpAsRoot() for x in updates ]
+            'model': model.dump()
         }
         if configs:
             body['configs'] = configs
         # Send request
-        rsp = self.connection.patch(*self.buildPaths([], kwargs), json = body)
-        if rsp.status_code != 200:
+        rsp = self.connection.put(url, json = body)
+        # Handle response
+        if rsp.status_code == 404:
+            raise ModelNotFoundError
+        elif rsp.status_code != 200:
             self.handleError(rsp)
-        # TODO: Load the update result
+        # Done
 
-    def deleteByID(self, id, configs = None, **kwargs):
-        """Delete model by id
+    def update(self, url, updates, id = None, query = None, configs = None):
+        """Update a model
+        Returns:
+            The count of matched models
         """
-        # TODO:
-        #   Support send configs
-        rsp = self.connection.delete(*self.buildPaths([ id ], kwargs))
+        if not id is None and query:
+            raise ValueError('Cannot both specify id and query')
+        if id is None and not query:
+            raise ValueError('Require id or query')
+        # Create the body
+        body = {
+            'updates': [ x.dump() for x in updates ]
+        }
+        if not id is None:
+            body['id'] = id
+        if query:
+            body['query'] = query.dump()
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.patch(url, json = body)
+        # Handle response
         if rsp.status_code != 200:
             self.handleError(rsp)
+        # Load the update result
+        return _json.loads(rsp.content)['value']
 
-    def watch(self, condition = None, **kwargs):
+    def delete(self, url, id = None, query = None, configs = None):
+        """Delete model by id
+        Returns:
+            The count of deleted models
+        """
+        if not id is None and query:
+            raise ValueError('Cannot both specify id and query')
+        if id is None and not query:
+            raise ValueError('Require id or query')
+        # Create body
+        body = {}
+        if not id is None:
+            body['id'] = id
+        if query:
+            body['query'] = query.dump()
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.delete(url, json = body)
+        # Handle response
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+        # Load the update result
+        return _json.loads(rsp.content)['value']
+
+    def count(self, url, id = None, query = None, configs = None):
+        """Count
+        Returns:
+            The count of counting models
+        """
+        if not id is None and query:
+            raise ValueError('Cannot both specify id and query')
+        # Create body
+        body = {}
+        if not id is None:
+            body['id'] = id
+        if query:
+            body['query'] = query.dump()
+        if configs:
+            body['configs'] = configs
+        # Send request
+        rsp = self.connection.get(self.getFeatureUrl(url, FEATURE_QUERY_COUNT), json = body)
+        if rsp.status_code != 200:
+            self.handleError(rsp)
+        # Done
+        return _json.loads(rsp.content)['value']
+
+    def watch(self, url, query = None):
         """Watch the resource
         Returns:
-            Yield of ResourceWatchChangeSet
+            A tuple of (List of models, Watcher)
         """
-        # Keep watching changes
-        with closing(self.connection.post(*self.buildPaths([], kwargs), json = { 'query': condition.dump() } if condition else {}, stream = True, timeout = None)) as rsp:
-            # Check header
-            if rsp.status_code == 404:
-                return
-            elif rsp.status_code != 200:
-                self.handleError(rsp)
-            # Iterate reading content
-            for line in rsp.iter_lines():
-                line = line.strip()
-                if not line:
-                    # An empty line, used for keep-alive
-                    continue
-                jsonObj = _json.loads(line.decode('utf8'))
-                # It's a little tricky to load the change set
-                if jsonObj.get('newModel'):
-                    jsonObj['newModel'] = self.modelClass(jsonObj['newModel'])
-                if jsonObj.get('oldModel'):
-                    jsonObj['oldModel'] = self.modelClass(jsonObj['oldModel'])
-                # Load the changeset
-                changeSet = ResourceWatchChangeSet(jsonObj)
-                changeSet.validate()
-                yield changeSet
+        raise NotImplementedError

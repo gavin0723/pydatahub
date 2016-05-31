@@ -11,41 +11,57 @@
 
 import logging
 
-from itertools import chain
-
 from pymongo import IndexModel, ASCENDING, DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from datahub.spec import *
 from datahub.model import DumpContext
 from datahub.errors import BadValueError, DuplicatedKeyError, ModelNotFoundError
 from datahub.updates import PushAction, PushsAction, PopAction, SetAction, ClearAction
 from datahub.conditions import AndCondition, OrCondition, NotCondition, KeyValueCondition, KeyValuesCondition, ExistCondition, \
-    NonExistCondition, LargerCondition, SmallerCondition
-from datahub.repository import Repository, ReplaceResult, UpdateResult, UpdatesResult, DeletesResult
+    NonExistCondition, GreaterCondition, LesserCondition
+from datahub.repository import Repository
 
 class MongodbRepository(Repository):
     """The mongodb repository
     """
-    def __init__(self, modelClass, database, sorts = None):
+    logger = logging.getLogger('datahub.adapters.repository.mongodb')
+
+    FEATURES = [
+        # The store feature
+        FEATURE_STORE_EXIST,
+        FEATURE_STORE_GET,
+        FEATURE_STORE_CREATE,
+        FEATURE_STORE_REPLACE,
+        FEATURE_STORE_UPDATE,
+        FEATURE_STORE_DELETE,
+        FEATURE_STORE_COUNT,
+        # The query feature
+        FEATURE_QUERY_EXIST,
+        FEATURE_QUERY_GET,
+        FEATURE_QUERY_UPDATE,
+        FEATURE_QUERY_DELETE,
+        FEATURE_QUERY_COUNT,
+        ]
+
+    def __init__(self, cls, database, sorts = None):
         """Create a new MongodbRepository
         """
-        super(MongodbRepository, self).__init__(modelClass, sorts)
+        super(MongodbRepository, self).__init__(cls, sorts)
         # Check the metadata
-        metadata = modelClass.getMetadata()
+        metadata = cls.getMetadata()
         if not metadata:
-            raise ValueError('Require metadata of the model [%s]' % modelClass.__name__)
+            raise ValueError('Require metadata of the model [%s]' % cls.__name__)
         # Get the collection
         if not metadata.namespace:
-            raise ValueError('Require namespace in the model [%s] metadata' % modelClass.__name__)
+            raise ValueError('Require namespace in the model [%s] metadata' % cls.__name__)
         self.collection = database[metadata.namespace]
         # Get the indices
-        if metadata.indices or metadata.expires:
-            indices = []
-            if metadata.indices:
-                indices.extend([ IndexModel([ (x, ASCENDING) for x in idx.keys ], unique = idx.unique, sparse = idx.sparse) for idx in metadata.indices ])
-            if metadata.expires:
-                indices.extend([ IndexModel([ (x, ASCENDING) ], expireAfterSeconds = 0) for x in metadata.expires ])
-            # Create the indices
+        indices = []
+        indices.extend([ IndexModel([ (x, ASCENDING) for x in idx.keys ], unique = idx.unique, sparse = idx.sparse) for idx in metadata.getAttrs('index') ])
+        indices.extend([ IndexModel([ (x.key, ASCENDING) ], expireAfterSeconds = x.expires) for x in metadata.getAttrs('expire') ])
+        # Create the indices
+        if indices:
             self.collection.create_indexes(indices)
 
     def __getquerybycondition__(self, condition):
@@ -71,12 +87,12 @@ class MongodbRepository(Repository):
             return { condition.key: { '$exists': True } }
         elif isinstance(condition, NonExistCondition):
             return { condition.key: { '$exists': False } }
-        elif isinstance(condition, LargerCondition):
+        elif isinstance(condition, GreaterCondition):
             if condition.equals:
                 return { condition.key: { '$gte': condition.value } }
             else:
                 return { condition.key: { '$gt': condition.value } }
-        elif isinstance(condition, SmallerCondition):
+        elif isinstance(condition, LesserCondition):
             if condition.equals:
                 return { condition.key: { '$lte': condition.value } }
             else:
@@ -137,7 +153,7 @@ class MongodbRepository(Repository):
             # Done
         return query
 
-    def getQueryByCondition(self, condition):
+    def getMongoQueryByCondition(self, condition):
         """Get mongodb query by condition
         """
         # Get original query
@@ -147,12 +163,12 @@ class MongodbRepository(Repository):
         # Done
         return query
 
-    def getSortBySort(self, sort):
+    def getMongoSortBySortRule(self, sort):
         """Get mongodb sort by sort
         """
         return (sort.key, ASCENDING if sort.ascending else DESCENDING)
 
-    def getUpdatesByUpdates(self, updates):
+    def getMongoUpdatesByUpdates(self, updates):
         """get mongodb updates by updates
         """
         mongoUpdates = []
@@ -189,357 +205,224 @@ class MongodbRepository(Repository):
         # Done
         return mongoUpdateArgs
 
-    @Repository.existByID.implement
-    def existByID(self, id):
-        """Exist by id
+    def exist(self, id = None, configs = None):
+        """Exist
         Parameters:
             id                              The id
         Returns:
             True / False
         """
-        return not self.collection.find_one(id, projection = {}) is None
+        if isinstance(id, (list, tuple)):
+            query = { '_id': { '$in': id } }
+        else:
+            query = id
+        # Query mongodb
+        return not self.collection.find_one(query, projection = {}) is None
 
-    @Repository.existsByID.implement
-    def existsByID(self, ids):
-        """Exists by id
-        Parameters:
-            ids                             A list of id
-        Returns:
-            A list of exist ids
-        """
-        return [ x['_id'] for x in self.collection.find({ '_id': { '$in': ids } }, projection = {}) ]
-
-    @Repository.existsByQuery.implement
-    def existsByQuery(self, condition):
+    def existByQuery(self, query, configs = None):
         """Exists by query
         Parameters:
-            condition                       The condition
+            query                           The condition
         Returns:
-            A list of exist ids
+            True / False
         """
-        return [ x['_id'] for x in self.collection.find(self.getQueryByCondition(condition), projection = {}) ]
+        return not self.collection.find_one(self.getMongoQueryByCondition(query), projection = {}) is None
 
-    @Repository.getByID.implement
-    def getByID(self, id):
-        """Get by id
+    def getOne(self, id, configs = None):
+        """Get one by id
+        Returns:
+            Model object
         """
         doc = self.collection.find_one(id)
         if doc:
-            model = self.modelClass(doc)
+            model = self.cls(doc)
             model.validate()
             return model
 
-    @Repository.getsByID.implement
-    def getsByID(self, ids, sorts = None):
-        """Get a couple of models by id
-        Parameters:
-            ids                             A list of id
+    def get(self, id = None, start = 0, size = 0, sorts = None, configs = None):
+        """Get by id
         Returns:
-            Yield of model
+            Yield of Model object
         """
-        for doc in self.collection.find({ '_id': { '$in': ids } }, sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ]):
-            model = self.modelClass(doc)
-            model.validate()
-            yield model
+        if isinstance(id, (list, tuple)):
+            # Get models
+            for doc in self.collection.find(
+                { '_id': { '$in': id } },
+                sort = [ self.getMongoSortBySortRule(x) for x in sorts or self.sorts or [] ],
+                skip = start,
+                limit = size
+                ):
+                model = self.cls(doc)
+                model.validate()
+                yield model
+        elif not id is None:
+            # Get a single model
+            # NOTE: Ignore the sorts parameters
+            doc = self.collection.find_one(id)
+            if doc:
+                model = self.cls(doc)
+                model.validate()
+                yield model
+        else:
+            # Get all models
+            for doc in self.collection.find(
+                sort = [ self.getMongoSortBySortRule(x) for x in sorts or self.sorts or [] ],
+                skip = start,
+                limit = size
+                ):
+                model = self.cls(doc)
+                model.validate()
+                yield model
 
-    @Repository.getsByQuery.implement
-    def getsByQuery(self, condition, sorts = None, start = 0, size = 10):
+    def getByQuery(self, query, sorts = None, start = 0, size = 0, configs = None):
         """Gets by query
         Parameters:
-            condition                       The condition
+            query                       The condition
         Returns:
             Yield of model
         """
-        for doc in self.collection.find(self.getQueryByCondition(condition),
-            sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ],
+        for doc in self.collection.find(self.getMongoQueryByCondition(query),
+            sort = [ self.getMongoSortBySortRule(x) for x in sorts or self.sorts or [] ],
             skip = start,
             limit = size
             ):
-            model = self.modelClass(doc)
+            model = self.cls(doc)
             model.validate()
             yield model
 
-    @Repository.gets.implement
-    def gets(self, start = 0, size = 10, sorts = None):
-        """Get all models
-        Returns:
-            Yield of model
-        """
-        for doc in self.collection.find(sort = [ self.getSortBySort(x) for x in sorts or self.sorts or [] ], skip = start, limit = size):
-            model = self.modelClass(doc)
-            model.validate()
-            yield model
-
-    @Repository.create.implement
-    def create(self, model, overwrite = False, configs = None):
+    def create(self, model, configs = None):
         """Create a new model
         Parameters:
             model                           The model object
+            overwrite                       Whether to overwrite the model or not if the model created is already existed
+            configs                         A dict of configs
         Returns:
-            The model object which is created
+            Nothing
+        Configs:
+            overwrite                       Overwrite the model if exists, false by default
         """
+        # Check model type
+        if not isinstance(model, self.cls):
+            raise TypeError('model must be an instance of class [%s]' % self.cls.__name__)
+        # Validate model & dump
         model.validate()
+        doc = model.dump(DumpContext(datetime2str = False))
+        # Write to mongodb
+        overwrite = configs.get('overwrite', False) if configs else False
         if not overwrite:
             try:
-                self.collection.insert_one(model.dump(DumpContext(datetime2str = False)))
+                self.collection.insert_one(doc)
             except DuplicateKeyError as error:
-                raise DuplicatedKeyError(error.message)
+                raise DuplicatedKeyError(error.message, model.id)
         else:
-            self.collection.replace_one({ '_id': model.id }, model.dump(DumpContext(datetime2str = False)), upsert = True)
+            self.collection.replace_one({ '_id': model.id }, doc, upsert = True)
         # Done
-        return model
 
-    @Repository.replace.implement
     def replace(self, model, configs = None):
         """Replace a model by id
         Parameters:
             model                           The model object
+            configs                         A dict of configs
         Returns:
-            ReplaceResult
+            Nothing
+        Errors:
+            - ModelNotFoundError will be raised if the model not found
+        Configs:
+            autoCreate                      Auto create the document if not found, false by default
         """
-        # The document before replacing will be returned
-        doc = self.collection.find_one_and_replace({ '_id': model.id }, model.dump(DumpContext(datetime2str = False)))
-        if not doc:
+        # Check model type
+        if not isinstance(model, self.cls):
+            raise TypeError('model must be an instance of class [%s]' % self.cls.__name__)
+        # Validate model & dump
+        model.validate()
+        doc = model.dump(DumpContext(datetime2str = False))
+        # Replace mongodb
+        autoCreate = configs.get('autoCreate', False) if configs else False
+        res = self.collection.replace_one({ '_id': model.id }, doc, upsert = autoCreate)
+        if res.matched_count == 0 and res.modified_count == 0 and res.upserted_id is None:
             raise ModelNotFoundError
-        # Load model
-        oldModel = self.modelClass(doc)
-        oldModel.validate()
         # Done
-        return ReplaceResult(before = oldModel, after = model)
 
-    @Repository.updateByID.implement
-    def updateByID(self, id, updates, configs = None):
-        """Update a model by id
+    def update(self, id, updates, configs = None):
+        """Update model
         Parameters:
             id                              The model id
-            updates                         The json updates
+            updates                         A list of UpdateAction
+            configs                         A dict of configs
         Returns:
-            The updated model if updated, None will be returned if not updated
-        NOTE:
-            Current implementation cannot detect if the model is updated or not (which has no changes)
+            The count of matched models
         """
-        doc = self.collection.find_one_and_update({ '_id': id }, self.getUpdatesByUpdates(updates))
-        if not doc:
-            raise ModelNotFoundError
-        # Load the old model
-        oldModel = self.modelClass(doc)
-        oldModel.validate()
-        # TODO: Create the updated model by applying the updates
-        newModel = None
-        #newModel = oldModel.clone()
-        #newModel.update(updates)
-        doc = self.collection.find_one(id)
-        if doc:
-            newModel = self.modelClass(doc)
-            newModel.validate()
-        # Done
-        return UpdateResult(before = oldModel, after = newModel)
-
-    @Repository.updatesByID.implement
-    def updatesByID(self, ids, updates, configs = None):
-        """Update a couple of models by id
-        Parameters:
-            ids                             The model id list
-            updates                         The json updates
-        Returns:
-            The UpdatesResult object
-        NOTE:
-            In order to get the updated models, the document is updated one by one.
-            So, if you wanna update lots of documents in a reasonable time and ignore the returned models,
-            please set config:
-                fastUpdate = True
-        """
-        if configs and configs.get('fastUpdate', False):
-            # Use fast update
-            return UpdatesResult(count = self.collection.update_many({ '_id': { '$in': ids } }, self.getUpdatesByUpdates(updates)).modified_count)
+        ups = self.getMongoUpdatesByUpdates(updates)
+        if isinstance(id, (list, tuple)):
+            res = self.collection.update_many({ '$in': { '_id': id } }, ups)
         else:
-            # Normal update
-            mongoUpdates = self.getUpdatesByUpdates(updates)
-            models = []
-            for id in ids:
-                doc = self.collection.find_one_and_update({ '_id': id }, mongoUpdates)
-                if doc:
-                    # Load model, the model before updated
-                    oldModel = self.modelClass(doc)
-                    oldModel.validate()
-                    # TODO: Create the updated model by applying the updates
-                    #newModel = oldModel.clone()
-                    #newModel.update(updates)
-                    # Add
-                    models.append((oldModel, None))
-            # Done
-            return UpdatesResult(updates = [ UpdateResult(before = x, after = y) for (x, y) in models ], count = len(models))
+            res = self.collection.update_one({ '_id': id }, ups)
+        # Return the count of matched models
+        return res.matched_count
 
-    @Repository.updatesByQuery.implement
-    def updatesByQuery(self, condition, updates, configs = None):
+    def updateByQuery(self, query, updates, configs = None):
         """Update a couple of models by query
         Parameters:
-            condition                       The condition
-            updates                         The json updates
+            query                           The condition
+            updates                         A list of UpdateAction
+            configs                         A dict of configs
         Returns:
-            The UpdatesResult object
-        NOTE:
-            In order to get the updated models, the document is updated one by one.
-            So, if you wanna update lots of documents in a reasonable time and ignore the returned models,
-            please set config:
-                fastUpdate = True
+            The count of matched models
         """
-        if configs and configs.get('fastUpdate', False):
-            # Use fast update
-            return UpdatesResult(count = self.collection.update_many(self.getQueryByCondition(condition), self.getUpdatesByUpdates(updates)).modified_count)
-        else:
-            # Get updates
-            mongoUpdates = self.getUpdatesByUpdates(updates)
-            # Iterate updating
-            updatedIDs = []
-            models = []         # A list of (before, after)
-            while True:
-                if not models:
-                    updateCondition = condition
-                else:
-                    updateCondition = AndCondition(conditions = [
-                        condition,
-                        NotCondition(condition = KeyValuesCondition(key = '_id', values = updatedIDs))
-                        ])
-                doc = self.collection.find_one_and_update(self.getQueryByCondition(updateCondition), mongoUpdates)
-                if doc:
-                    # Load model, the model before updated
-                    oldModel = self.modelClass(doc)
-                    oldModel.validate()
-                    # TODO: Create the updated model by applying the updates
-                    #newModel = oldModel.clone()
-                    #newModel.update(updates)
-                    # Add
-                    models.append((oldModel, None))
-                    updatedIDs.append(oldModel.id)
-                else:
-                    # No more
-                    break
-            # Done
-            return UpdatesResult(updates = [ UpdateResult(before = x, after = y) for (x, y) in models ], count = len(models))
+        return self.collection.update_many(self.getMongoQueryByCondition(query), self.getMongoUpdatesByUpdates(updates)).modified_count
 
-    @Repository.deleteByID.implement
-    def deleteByID(self, id, configs = None):
-        """Delete a model
+    def delete(self, id, configs = None):
+        """Delete model
         Parameters:
-            id                                  The id
+            id                              The id
+            configs                         A dict of configs
         Returns:
-            - The deleted model
-        NOTE:
-            In order to get the removed model, the document is fetched before removed
-            If you could ignore the returned model, please set config:
-                fastRemove = True
+            The count of deleted models
         """
-        if configs and configs.get('fastRemove', False):
-            # Fast remove
-            if self.collection.delete_one({ '_id': id }).deleted_count == 0:
-                raise ModelNotFoundError
+        if isinstance(id, (list, tuple)):
+            res = self.collection.delete_many({ '_id': { '$in': id }})
         else:
-            # Remove it
-            doc = self.collection.find_one_and_delete({ '_id': id })
-            if not doc:
-                raise ModelNotFoundError
-            # Load model
-            model = self.modelClass(doc)
-            model.validate()
-            # Done
-            return model
+            res = self.collection.delete_one({ '_id': id })
+        # Done
+        return res.deleted_count
 
-    @Repository.deletesByID.implement
-    def deletesByID(self, ids, configs = None):
-        """Delete a couple of models
-        Parameters:
-            ids                                 A list of id
-        Returns:
-            The DeletesResult
-        NOTE:
-            In order to get the removed models, the document is fetched before removed
-            So, if you wanna remove lots of documents in a reasonable time and ignore the returned models,
-            please set config:
-                fastRemove = True
-        """
-        if configs and configs.get('fastRemove', False):
-            # Fast remove
-            return DeletesResult(count = self.collection.delete_many({ '_id': { '$in': ids } }).deleted_count)
-        else:
-            models = []
-            for id in ids:
-                doc = self.collection.find_one_and_delete({ '_id': id })
-                if doc:
-                    # Load model
-                    model = self.modelClass(doc)
-                    model.validate()
-                    models.append(model)
-            # Return
-            return DeletesResult(models = models, count = len(models))
-
-    @Repository.deletesByQuery.implement
-    def deletesByQuery(self, condition, configs = None):
+    def deleteByQuery(self, query, configs = None):
         """Delete a couple of models by query
         Parameters:
-            condition                           The condition
+            query                           The condition
+            configs                         A dict of configs
         Returns:
-            The DeletesResult
-        NOTE:
-            In order to get the removed models, the document is fetched before removed
-            So, if you wanna remove lots of documents in a reasonable time and ignore the returned models,
-            please set config:
-                fastRemove = True
+            The count of deleted models
         """
-        if configs and configs.get('fastRemove', False):
-            # Fast remove
-            return DeletesResult(count = self.collection.delete_many(self.getQueryByCondition(condition)).deleted_count)
-        else:
-            mongoQuery = self.getQueryByCondition(condition)
-            models = []
-            while True:
-                doc = self.collection.find_one_and_delete(mongoQuery)
-                if doc:
-                    # Load the deleted model
-                    model = self.modelClass(doc)
-                    model.validate()
-                    models.append(model)
-                else:
-                    # No more models
-                    break
-            # Return
-            return DeletesResult(models = models, count = len(models))
+        return self.collection.delete_many(self.getMongoQueryByCondition(query)).deleted_count
 
-    @Repository.count.implement
-    def count(self):
-        """Count all
-        Returns:
-            The number
-        """
-        return self.collection.count()
-
-    @Repository.countByID.implement
-    def countByID(self, ids):
-        """Count the model numbers by id
+    def count(self, id = None, configs = None):
+        """Count models
         Parameters:
-            ids                             A list of id
+            id                              The id or a list / tuple of id or None
+            configs                         A dict of configs
         Returns:
-            The number
+            The count of the counting models
         """
-        return self.collection.count({ '_id': { '$in': ids } })
+        if isinstance(id, (list, tuple)):
+            query = { '_id': { '$in': id } }
+        elif not id is None:
+            query = { '_id': id }
+        else:
+            query = None
+        # Count
+        return self.collection.count(query)
 
-    @Repository.countByQuery.implement
-    def countByQuery(self, condition):
+    def countByQuery(self, query, configs = None):
         """Count the model numbers by condition
         Parameters:
-            condition                       The condition
+            query                           The condition
         Returns:
-            The number
+            The count of the counting models
         """
-        return self.collection.count(self.getQueryByCondition(condition))
+        return self.collection.count(self.getMongoQueryByCondition(query))
 
-    @classmethod
-    def getFeatures(cls):
-        """Get the features
+    def support(self, name):
+        """Check if the feature is supported
         """
-        features = []
-        for key in dir(cls):
-            value = getattr(cls, key)
-            if isinstance(value, Feature):
-                features.append(value)
-        return features
+        return name in self.FEATURES

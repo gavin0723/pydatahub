@@ -10,9 +10,3 @@
 """
 
 from datahub.repository import Repository
-
-def test_repository_basic():
-    """The the repository basic
-    """
-    for feature in Repository.features:
-        assert not feature.isImplemented

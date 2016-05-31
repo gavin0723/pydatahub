@@ -68,6 +68,9 @@ def test_model_basic():
     assert newModel.defaultType2 == '_defaultValue2'
     assert newModel.requiredType == '_requiredValue'
     assert model == newModel
+    # Check not equal
+    newModel.defaultType = 'A new value'
+    assert model != newModel
     # Delete
     del model.stringType
     assert model.stringType == None
@@ -114,7 +117,7 @@ def test_model_condition():
         ]))
     assert model.match(ExistCondition(key = 'anyType.key.akey'))
     assert model.match(KeyValueCondition(key = 'anyType.key.akey', value = 'value1'))
-    assert model.match(LargerCondition(key = 'floatType', value = 1.0, equals = True))
-    assert model.match(LargerCondition(key = 'floatType', value = 0.9))
-    assert model.match(SmallerCondition(key = 'floatType', value = 1.0, equals = True))
-    assert model.match(SmallerCondition(key = 'floatType', value = 1.1))
+    assert model.match(GreaterCondition(key = 'floatType', value = 1.0, equals = True))
+    assert model.match(GreaterCondition(key = 'floatType', value = 0.9))
+    assert model.match(LesserCondition(key = 'floatType', value = 1.0, equals = True))
+    assert model.match(LesserCondition(key = 'floatType', value = 1.1))

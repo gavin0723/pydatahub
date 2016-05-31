@@ -7,95 +7,79 @@
     File Name: resource.py
     Description:
 
-    Check the standard interface
-    A map for special endpoints:
-        - store.exist           HEAD            /<id>
-        - store.exists          HEAD            /<id>               ID is splited by ,
-        - store.get             GET             /<id>
-        - store.gets            GET             /<id>               ID is splited by ,
-        - store.gets            GET             /
-        - store.create          POST            /
-        - store.replace         PUT             /
-        - store.update          PATCH           /<id>
-        - store.updates         PATCH           /<id>               ID is splited by ,
-        - store.delete          DELETE          /<id>
-        - store.deletes         DELETE          /<id>               ID is splited by ,
-    All feature has endpoint
-        - *                     POST            /_feature/<feature name>
-
 """
 
 import logging
 
 from unifiedrpc import context, endpoint, Service, Endpoint
 from unifiedrpc.helpers import requiredata, paramtype, container, mimetype
-from unifiedrpc.errors import BadRequestError, NotFoundError
+from unifiedrpc.errors import BadRequestError, NotFoundError, InternalServerError
 from unifiedrpc.adapters.web import head, get, post, put, patch, delete
 from unifiedrpc.content.container import PlainContentContainer
 
-from datahub.sorts import *
+from datahub.spec import *
 from datahub.utils import json
+from datahub.sorts import SortRule
 from datahub.model import DataModel
-from datahub.errors import DataHubError, ModelNotFoundError
-from datahub.updates import *
-from datahub.conditions import *
+from datahub.errors import DataHubError, ModelNotFoundError, WatchTimeoutError, WatchResetError, DuplicatedKeyError
+from datahub.updates import UpdateAction, SetAction
+from datahub.repository import Repository
+from datahub.conditions import Condition, AndCondition, KeyValueCondition
+
+CONFIG_WATCH_KEEP_ALIVE         = 10
 
 class ResourceLocation(object):
     """The resource location
     Attributes:
         path                                    The resource path prefix
-        params                                  The allowed parameters in this path
         features                                The enabled features for this resource location
+        modelAttrParams                         The model attribute parameters, a dict key is parameter value is attribute path
     """
-    def __init__(self, path, params = None, features = None, enableGeneral = True, enableWatch = True):
+    def __init__(self, path, features = None, modelAttrParams = None, general = True):
         """Create a ResourceLocation
         """
-        self.path = path if not path.endswith('/') else path[: -1]
-        self.params = params
+        # Well form the path
+        path = path if len(path) == 1 or not path.endswith('/') else path[: -1]
+        if not path:
+            path = '/'
+        # Set attribtues
+        self.path = path
+        self.general = general
         self.features = features
-        self.enableGeneral = enableGeneral
-        self.enableWatch = enableWatch
+        self.modelAttrParams = modelAttrParams
 
-class ParameterMapper(object):
-    """The parameter mapper
+class ParamRepoSelector(object):
+    """The repository selector based on parameter
+    Attributes:
+        param                                   The parameter name
+        repositories                            The repository dict which key is string (The parameter value) value is Manager object
+        default                                 The default repository when could not choose repository from parameter
     """
-    def getCondition(self, value):
-        """Get the query condition by value for this parameter
+    def __init__(self, param, repositories, default = None):
+        """Create a new ParamRepoSelector
         """
-        raise NotImplementedError
+        self.param = param
+        self.default = default
+        self.repositories = repositories
 
-    def setModel(self, value):
-        """The the value to model
+    def __call__(self, params):
+        """Pop repository from params
         """
-        raise NotImplementedError
-
-class KeyValueAttributeParameterMapper(ParameterMapper):
-    """The key value parameter attribute mapper
-    Maps a parameter to a model attribute (By key)
-    """
-    def __init__(self, key):
-        """Create a new KeyValueAttributeParameterMapper
-        """
-        self.key = key
-
-    def getCondition(self, value):
-        """Get the query condition by value for this parameter
-        """
-        return KeyValueCondition(key = self.key, value = value)
-
-    def setModel(self, model, value):
-        """The the value to model
-        """
-        model.update(SetAction(key = self.key, value = value))
+        key = params.pop(self.param, None)
+        if key in self.repositories:
+            return self.repositories[key]
+        else:
+            return self.default
 
 class ResourceService(Service):
     """The resource service
     """
-    def __init__(self, manager, locations, pipeline = None, name = None):
+    def __init__(self, repository, locations, name = None, configs = None):
         """Create a new ResourceService
         """
-        self.manager = manager
+        self.configs = configs
         self.locations = locations
+        self.repository = repository
         # Create the endpoints
         endpoints = {}
         for location in self.locations:
@@ -103,658 +87,576 @@ class ResourceService(Service):
         # Super
         super(ResourceService, self).__init__(name, endpoints)
 
-    def __resourcerequest__(self, location, feature, params = None):
+    def invoke(self, location, feature, target, params):
         """Handle resource request
         Parameters:
             location                            The ResourceLocation object
             feature                             The feature name
+            target                              The calling target
             params                              The parameters
         Returns:
             The return result object
         """
-        # TODO:
-        #   Add configuration pipeline support
-        return self.manager.invokeFeature(feature, params)
+        return target(**params)
 
-    def watch(self):
-        """Watch this resource
-        """
-        body = context.request.content.data
-        if body:
-            # Get condition from body
-            query = body.pop('query', None)
-            if query:
-                try:
-                    condition = loadCondition(query)
-                except DataHubError as error:
-                    raise BadRequestError(reason = 'Invalid query [%s]' % error)
-            # Check body
-            if body:
-                raise BadRequestError(reason = 'Invalid body')
-        else:
-            condition = None
-        # Start watch
-        for changeSet in self.manager.watch(condition, keepAlive = True):
-            if changeSet:
-                # Return change set
-                yield '%s\n' % json.dumps(changeSet.dump(), ensure_ascii = False).encode('utf8')
-            else:
-                # Keep alive
-                yield '\n'
-
-    def createEndpoints4Location(self, location):
-        """Create the endpoint for a feature
+    def popRepositoryFromParams(self, params):
+        """Get repository
         Returns:
-            Yield of (name, Endpoint obejct)
+            params, repo
         """
-        # The watch feature endpoint
-        if location.enableWatch:
-            yield '_watch', post(path = location.path + '/_watch')(
-                mimetype('text/plain')(
-                    container(PlainContentContainer)(
-                        endpoint()(self.watch)
-                        )
-                    )
-                )
-        # Create the handlers
-        handlers = {}
-        # The exist feature
-        if not location.features or 'store.exist' in location.features or 'store.exists' in location.features:
-            handler = StoreExistFeatureEndpointHandler(self, location)
-            handlers['store.exist'] = handler
-            handlers['store.exists'] = handler
-            yield '_store.exist', head(path = location.path + '/<id>')(endpoint()(handler))
-        if not location.features or 'query.exists' in location.features:
-            handler = QueryExistsFeatureEndpointHandler(self, location)
-            handlers['query.exists'] = handler
-        # The get feature
-        if not location.features or 'store.get' in location.features or 'store.gets' in location.features:
-            handler = StoreGetFeatureEndpointHandler(self, location)
-            handlers['store.get'] = handler
-            handlers['store.gets'] = handler
-            yield '_store.get', get(path = location.path + '/<id>')(endpoint()(handler))
-        if not location.features or 'store.getall' in location.features:
-            handler = StoreGetAllFeatureEndpointHandler(self, location)
-            handlers['store.getall'] = handler
-            yield '_store.getall', get(path = location.path)(endpoint()(handler))
-        if not location.features or 'query.gets' in location.features:
-            handler = QueryGetsFeatureEndpointHandler(self, location)
-            handlers['query.gets'] = handler
-        # The create feature
-        if not location.features or 'store.create' in location.features:
-            handler = StoreCreateFeatureEndpointHandler(self, location)
-            handlers['store.create'] = handler
-            yield '_store.create', post(path = location.path)(endpoint()(handler))
-        # The replace feature
-        if not location.features or 'store.replace' in location.features:
-            handler = StoreReplaceFeatureEndpointHandler(self, location)
-            handlers['store.replace'] = handler
-            yield '_store.replace', put(path = location.path)(endpoint()(handler))
-        # The update feature
-        if not location.features or 'store.update' in location.features or 'store.updates' in location.features:
-            handler = StoreUpdateFeatureEndpointHandler(self, location)
-            handlers['store.update'] = handler
-            handlers['store.updates'] = handler
-            yield '_store.update', patch(path = location.path + '/<id>')(endpoint()(handler))
-        if not location.features or 'query.updates' in location.features:
-            handler = QueryUpdatesFeatureEndpointHandler(self, location)
-            handlers['query.updates'] = handler
-        # The delete feature
-        if not location.features or 'store.delete' in location.features or 'store.deletes' in location.features:
-            handler = StoreDeleteFeatureEndpointHandler(self, location)
-            handlers['store.delete'] = handler
-            handlers['store.deletes'] = handler
-            yield '_store.delete', delete(path = location.path + '/<id>')(endpoint()(handler))
-        if not location.features or 'query.deletes' in location.features:
-            handler = QueryDeletesFeatureEndpointHandler(self, location)
-            handlers['query.deletes'] = handler
-        # The count feature
-        if not location.features or 'store.count' in location.features:
-            handler = StoreCountFeatureEndpointHandler(self, location)
-            handlers['store.count'] = handler
-        if not location.features or 'store.countall' in location.features:
-            handler = StoreCountAllFeatureEndpointHandler(self, location)
-            handlers['store.countall'] = handler
-        if not location.features or 'query.count' in location.features:
-            handler = QueryCountFeatureEndpointHandler(self, location)
-            handlers['query.count'] = handler
-        # The general feature endpoint
-        if location.enableGeneral:
-            yield '_feature', post(path = location.path + '/_feature/<featureName>')(
-                endpoint()(
-                    GeneralFeatureEndpointHandler(self, location, handlers)
-                    )
-                )
+        if isinstance(self.repository, Repository):
+            # The repository
+            return self.repository
+        else:
+            # Get the repository
+            return self.repository(params)
 
-class FeatureEndpointHandler(object):
-    """The feature endpoint handler
-    """
-    def __init__(self, service, location):
-        """Create a new FeatureEndpointHandler
+    def popIDFromParamsOrBody(self, params, body, key = 'id'):
+        """Get and pop id
         """
-        self.service = service
-        self.location = location
+        # TODO: Identify a single id and a single id with blank ids (which indicates this is a multiple ids request)
+        # Check key
+        if key in params and key in body:
+            raise BadRequestError(reason = 'Found id in both parameters and body')
+        # Get id
+        if key in params:
+            id = params.pop(key, None)
+            if id.find(',') != -1:
+                # A list
+                return filter(lambda x: x, map(lambda x: x.strip(), id.split(',')))
+            else:
+                # A string
+                return id
+        elif key in body:
+            return body.pop(key, None)
 
-    def raiseFeatureNotSupported(self, name):
-        """Raise feature not supported error
+    def popQueryFromBody(self, body, key = 'query'):
+        """Get query from body
         """
-        raise BadRequestError(reason = 'Feature [%s] not supported' % name)
+        try:
+            if body:
+                query = body.pop(key, None)
+                if query:
+                    return Condition.load(query)
+            # Done
+        except DataHubError as error:
+            raise BadRequestError(reason = 'Invalid query [%s]' % error)
 
-    def getIDs(self, params):
-        """Get and remove ids
-        """
-        if not 'id' in params:
-            raise BadRequestError(reason = 'Require id')
-        ids = filter(lambda x: x, map(lambda x: x.strip(), params.pop('id').split(',')))
-        if not ids:
-            raise BadRequestError(reason = 'Require id')
-        # Done
-        return ids
-
-    def getSorts(self, params):
+    def popSortsFromBody(self, body, key = 'sorts'):
         """Get and remove sorts
         """
-        if params and 'sorts' in params:
-            sorts = params.pop('sorts')
+        sorts = body.pop(key, None)
+        if sorts:
             if not isinstance(sorts, (list, tuple)):
                 raise BadRequestError(reason = 'Invalid sorts')
             sortRules = []
             for sort in sorts:
                 if not isinstance(sort, dict):
                     raise BadRequestError(reason = 'Invalid sorts')
-                key, ascending = sort.get('key'), sort.get('ascending', True)
-                if not key:
-                    raise BadRequestError(reason = 'Invalid sorts, require key')
+                try:
+                    sort = SortRule(sort)
+                    sort.validate()
+                except DataModelError as error:
+                    raise BadRequestError(reason = 'Invalid sort. Error [%s]' % error)
                 # Add this rule
-                sortRules.append(SortRule(key = key, ascending = ascending))
+                sortRules.append(sort)
             # Done
             return sortRules
 
-    def getQueryCondition(self, params):
-        """Get the query condition from params
-        """
-        query = params.pop('query', None)
-        if query:
-            try:
-                return loadCondition(query)
-            except DataHubError as error:
-                raise BadRequestError(reason = 'Invalid query [%s]' % error)
-
-    def getConditionsFromParams(self, params):
-        """Get conditions from params
+    def popModelAttributeConditionsFromParams(self, location, params):
+        """Get the query condition by value for this parameter
         Returns:
-            A list of conditions
+            A list of Condition object or None
         """
-        # Found other parameters
-        if not self.location.params:
-            raise BadRequestError
-        # Get conditions
-        conditions = []
-        for key, value in params.iteritems():
-            if not key in self.location.params:
-                raise BadRequestError(reason = 'Unknown parameter [%s]' % key)
-            conditions.append(self.location.params[key].getCondition(value))
+        if location.modelAttrParams:
+            conditions = []
+            for key, attrPath in location.modelAttrParams.iteritems():
+                if key in params:
+                    conditions.append(KeyValueCondition(key = attrPath, value = params.pop(key)))
+            return conditions
+
+    def popModelAttributeUpdateActionsFromParams(self, location, params):
+        """The the value to model
+        Returns:
+            A list of UpdateAction object or None
+        """
+        if location.modelAttrParams:
+            updateActions = []
+            for key, attrPath in location.modelAttrParams.iteritems():
+                if key in params:
+                    updateActions.append(SetAction(key = attrPath, value = params.pop(key)))
+            return updateActions
+
+    def getEndpointHandler(self, location, method):
+        """Get the endpoint handler
+        """
+        def handler(service, **kwargs):
+            """The handler
+            """
+            return method(location, kwargs, context.request.content.data if context.request.content and context.request.content.data else {})
         # Done
-        return conditions
+        return handler
 
-class StoreExistFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.exist / store.exists feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The exist api entry
+    def getLocationPath(self, location, path):
+        """Get location path
         """
-        # Get id or ids
-        ids = self.getIDs(kwargs)
-        # Check other parameters
-        if not kwargs:
-            # No more parameters, call store.exist or store.exists
-            if len(ids) == 1:
-                if self.location.features and not 'store.exist' in self.location.features:
-                    self.raiseFeatureNotSupported('store.exist')
-                return self.service.__resourcerequest__(self.location, 'store.exist', dict(id = ids[0]))
-            else:
-                if self.location.features and not 'store.exists' in self.location.features:
-                    self.raiseFeatureNotSupported('store.exists')
-                return self.service.__resourcerequest__(self.location, 'store.exists', dict(ids = ids))
+        if location.path.endswith('/'):
+            return location.path + path[1: ]
         else:
-            if self.location.features and not 'query.exists' in self.location.features:
-                self.raiseFeatureNotSupported('query.exists')
-            conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
-            # Call the feature
-            return self.service.__resourcerequest__(self.location, 'query.exists', dict(condition = AndCondition(conditions = conditions)))
+            return location.path + path
 
-class QueryExistsFeatureEndpointHandler(FeatureEndpointHandler):
-    """The query exists feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query exists feature api entry
+    def createEndpoints4Location(self, location):
+        """Create the endpoint for a feature
+        Returns:
+            Yield of (name, Endpoint) object
         """
-        # Get query from body
-        body = context.request.content.data
-        if not body:
-            raise BadRequestError(reason = 'Require body')
-        # Get the query
-        condition = self.getQueryCondition(body)
-        # Check body
+        # The general feature
+        if location.general:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.general))
+            get(path = self.getLocationPath(location, '/_feature/<feature>'))(endpoint)
+            post(path = self.getLocationPath(location, '/_feature/<feature>'))(endpoint)
+            # Yield
+            yield 'general', endpoint
+        # The watch feature
+        if not location.features or FEATURE_WATCH in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.watch))
+            container(PlainContentContainer)(endpoint)
+            mimetype('text/plain')(endpoint)
+            post(path = self.getLocationPath(location, '/_watch'))(endpoint)
+            # Yield
+            yield 'watch', endpoint
+        # The exist feature
+        if not location.features or \
+            FEATURE_STORE_EXIST in location.features or \
+            FEATURE_QUERY_EXIST in location.features:
+            # Create endpoint
+            endpoint = Endpoint(self.getEndpointHandler(location, self.exist))
+            head(path = self.getLocationPath(location, '/'))(endpoint)
+            head(path = self.getLocationPath(location, '/<id>'))(endpoint)
+            yield 'exist', endpoint
+        # The get feature
+        if not location.features or \
+            FEATURE_STORE_GET in location.features or \
+            FEATURE_QUERY_GET in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.get))
+            get(path = self.getLocationPath(location, '/'))(endpoint)
+            get(path = self.getLocationPath(location, '/<id>'))(endpoint)
+            post(path = self.getLocationPath(location, '/_query'))(endpoint)
+            yield 'get', endpoint
+        # Get create feature
+        if not location.features or FEATURE_STORE_CREATE in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.create))
+            post(path = self.getLocationPath(location, '/'))(endpoint)
+            yield 'create', endpoint
+        # The replace feature
+        if not location.features or FEATURE_STORE_REPLACE in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.replace))
+            put(path = self.getLocationPath(location, '/'))(endpoint)
+            yield 'replace', endpoint
+        # The update feature
+        if not location.features or \
+            FEATURE_STORE_UPDATE in location.features or \
+            FEATURE_QUERY_UPDATE in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.update))
+            patch(path = self.getLocationPath(location, '/'))(endpoint)
+            patch(path = self.getLocationPath(location, '/<id>'))(endpoint)
+            yield 'update', endpoint
+        # The delete feature
+        if not location.features or \
+            FEATURE_STORE_DELETE in location.features or \
+            FEATURE_QUERY_DELETE in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.delete))
+            delete(path = self.getLocationPath(location, '/'))(endpoint)
+            delete(path = self.getLocationPath(location, '/<id>'))(endpoint)
+            yield 'delete', endpoint
+        # The count feature
+        if not location.features or \
+            FEATURE_STORE_COUNT in location.features or \
+            FEATURE_QUERY_COUNT in location.features:
+            endpoint = Endpoint(self.getEndpointHandler(location, self.count))
+            get(path = self.getLocationPath(location, '/_count'))(endpoint)
+            post(path = self.getLocationPath(location, '/_count'))(endpoint)
+            get(path = self.getLocationPath(location, '/_count/<id>'))(endpoint)
+            yield 'count', endpoint
+
+    def general(self, location, params, body):
+        """General entry
+        """
+        feature = params.pop('feature', None)
+        if not feature:
+            raise BadRequestError(reason = 'Require feature')
+        if location.features and not feature in location.features:
+            raise BadRequestError(reason = 'Unsupported feature [%s]' % feature)
+        # Call feature handlers
+        if feature == FEATURE_WATCH:
+            return self.watch(location, params, body)
+        elif feature in (FEATURE_STORE_EXIST, FEATURE_QUERY_EXIST):
+            return self.exist(location, params, body)
+        elif feature in (FEATURE_STORE_GET, FEATURE_QUERY_GET):
+            return self.get(location, params, body)
+        elif feature == FEATURE_STORE_CREATE:
+            return self.create(location, params, body)
+        elif feature == FEATURE_STORE_REPLACE:
+            return self.replace(location, params, body)
+        elif feature in (FEATURE_STORE_UPDATE, FEATURE_QUERY_UPDATE):
+            return self.update(location, params, body)
+        elif feature in (FEATURE_STORE_DELETE, FEATURE_QUERY_DELETE):
+            return self.delete(location, params, body)
+        elif feature in (FEATURE_STORE_COUNT, FEATURE_QUERY_COUNT):
+            return self.count(location, params, body)
+        else:
+            # Unknown feature
+            raise BadRequestError(reason = 'Unknown feature [%s]' % feature)
+
+    def watch(self, location, params, body):
+        """The watch entry
+        """
+        raise NotImplementedError
+
+    def exist(self, location, params, body):
+        """Exist entry
+        """
+        id, query = self.popIDFromParamsOrBody(params, body), self.popQueryFromBody(body)
+        if id and query:
+            raise BadRequestError(reason = 'Cannot both specify id and query')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Pop query from parameters
+        queryFromParams = self.popModelAttributeConditionsFromParams(location, params)  # Returns a list of Condition object
+        # Pop config
+        configs = body.pop('configs', None)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
-        # Check the kwargs
-        if kwargs:
-            conditions = self.getConditionsFromParams(kwargs)
-            if condition:
-                conditions.append(condition)
-            condition = AndCondition(conditions = conditions)
-        # Call the feature
-        return self.service.__resourcerequest__(self.location, 'query.exists', dict(condition = condition))
-
-class StoreGetFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.get / store.gets feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The get api entry
-        """
-        # Get id or ids
-        ids = self.getIDs(kwargs)
-        # Get sorts
-        sorts = self.getSorts(context.request.content.data)
-        # Check other parameters
-        if not kwargs:
-            # No more parameters, call store.get or store.gets
-            if len(ids) == 1:
-                if self.location.features and not 'store.get' in self.location.features:
-                    self.raiseFeatureNotSupported('store.get')
-                model = self.service.__resourcerequest__(self.location, 'store.get', dict(id = ids[0]))
-                if not model:
-                    raise NotFoundError
-                return model.dump()
-            else:
-                if self.location.features and not 'store.gets' in self.location.features:
-                    self.raiseFeatureNotSupported('store.gets')
-                # Call the feature
-                return [ x.dump() for x in self.service.__resourcerequest__(self.location, 'store.gets', dict(ids = ids, sorts = sorts)) ]
-        else:
-            # Found other parameters
-            if self.location.features and not 'query.gets' in self.location.features:
-                self.raiseFeatureNotSupported('query.gets')
-            # Get conditions
-            conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
-            # Call the features
-            models = [ x.dump() for x in self.service.__resourcerequest__(
-                self.location,
-                'query.gets',
-                dict(condition = AndCondition(conditions = conditions), sorts = sorts)
-                )]
-            # Make the same behavior
-            if len(ids) == 1:
-                if models:
-                    return models[0]
+        # Run
+        if query or queryFromParams:
+            # Use query
+            if location.features and not FEATURE_QUERY_EXIST in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_QUERY_EXIST)
+            # Build query
+            query = [ query ] if query else []
+            if queryFromParams:
+                query.extend(queryFromParams)
+            # Check id
+            if id:
+                if isinstance(id, basestring):
+                    query.append(KeyValueCondition(key = '_id', value = id))
                 else:
-                    raise NotFoundError
+                    query.append(KeyValuesCondition(key = '_id', values = id))
+            if len(query) == 1:
+                query = query[0]
             else:
-                return models
-
-class StoreGetAllFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.getall feature
-    """
-    def __call__(self, **kwargs):
-        """The get api entry
-        """
-        body = context.request.content.data
-        if body:
-            # Get sorts
-            sorts = self.getSorts(body)
-            # Get start & size
-            start = body.pop('start', 0)
-            size = body.pop('size', 10)
-            # Check the body
-            if body:
-                raise BadRequestError(reason = 'Invalid body')
+                query = AndCondition(conditions = query)
+            # Call repository
+            if not self.invoke(location, FEATURE_QUERY_EXIST, repo.existByQuery, dict(query = query, configs = configs)):
+                raise NotFoundError
         else:
-            sorts = None
-            start = 0
-            size = 10
-        # Check other parameters
-        if not kwargs:
-            if self.location.features and not 'store.getall' in self.location.features:
-                self.raiseFeatureNotSupported('store.getall')
-            # Call the feature
-            return [ x.dump() for x in self.service.__resourcerequest__(self.location, 'store.getall', dict(sorts = sorts, start = start, size = size)) ]
-        else:
-            # Found other parameters
-            if self.location.features and not 'query.gets' in self.location.features:
-                self.raiseFeatureNotSupported('query.gets')
-            # Get conditions
-            conditions = self.getConditionsFromParams(kwargs)
-            # Call
-            return [ x.dump() for x in self.service.__resourcerequest__(
-                self.location,
-                'query.gets',
-                dict(condition = AndCondition(conditions = conditions), sorts = sorts, start = start, size = size)
-                )]
+            if location.features and not FEATURE_STORE_EXIST in location.features:
+                raise BadRequestError(reason = 'Unsupported fe]ature [%s]' % FEATURE_STORE_EXIST)
+            # Call repository
+            if not self.invoke(location, FEATURE_STORE_EXIST, repo.exist, dict(id = id, configs = configs)):
+                raise NotFoundError
 
-class QueryGetsFeatureEndpointHandler(FeatureEndpointHandler):
-    """The query gets feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query gets feature api entry
+    def get(self, location, params, body):
+        """Exist entry
         """
-        body = context.request.content.data
-        # Get query from body
-        if not body:
-            raise BadRequestError(reason = 'Require body')
-        # Get query
-        condition = self.getQueryCondition(body)
-        # Get sorts from body
-        sorts = self.getSorts(body)
-        # Get start & size
-        start = body.pop('start', 0)
-        size = body.pop('size', 10)
-        # Check the body
+        id, query = self.popIDFromParamsOrBody(params, body), self.popQueryFromBody(body)
+        if id and query:
+            raise BadRequestError(reason = 'Cannot both specify id and query')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Pop start & size
+        start0, size0 = params.pop('start', None), params.pop('size', None)
+        start1, size1 = body.pop('start', None), body.pop('size', None)
+        if not start0 is None and not start1 is None:
+            raise BadRequestError(reason = 'Cannot specify start multiple times')
+        if not size0 is None and not size1 is None:
+            raise BadRequestError(reason = 'Cannot specify size multiple times')
+        start = 0
+        if not start0 is None:
+            start = start0
+        if not start1 is None:
+            start = start1
+        size = 0
+        if not size0 is None:
+            size = size0
+        if not size1 is None:
+            size = size1
+        # Pop sorts
+        sorts = self.popSortsFromBody(body)
+        # Pop conditions
+        queryFromParams = self.popModelAttributeConditionsFromParams(location, params)
+        # Pop configs
+        configs = body.pop('configs', None)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
-        # Call the feature
-        if kwargs:
-            # Get the condition
-            conditions = self.getConditionsFromParams(kwargs)
-            if condition:
-                conditions.append(condition)
-            condition = AndCondition(conditions = conditions)
-        # Call
-        return [ x.dump() for x in self.service.__resourcerequest__(
-                self.location,
-                'query.gets',
-                dict(condition = condition, sorts = sorts, start = start, size = size)
-                )]
+        # Run
+        if query or queryFromParams:
+            # Use query
+            if location.features and not FEATURE_QUERY_GET in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_QUERY_GET)
+            # Build query
+            query = [ query ] if query else []
+            if queryFromParams:
+                query.extend(queryFromParams)
+            if id:
+                if isinstance(id, basestring):
+                    query.append(KeyValueCondition(key = '_id', value = id))
+                else:
+                    query.append(KeyValuesCondition(key = '_id', values = id))
+            if len(query) == 1:
+                query = query[0]
+            else:
+                query = AndCondition(conditions = query)
+            # Call repository
+            models = self.invoke(location, FEATURE_QUERY_GET, repo.getByQuery, dict(query = query, sorts = sorts, start = start, size = size, configs = configs))
+        else:
+            # Use id
+            if location.features and not FEATURE_STORE_GET in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_GET)
+            # Call repository
+            models = self.invoke(location, FEATURE_STORE_GET, repo.get, dict(id = id, configs = configs))
+        # Return result
+        if isinstance(id, basestring):
+            # A single result
+            models = list(models)
+            if not models:
+                raise NotFoundError
+            elif len(models) != 1:
+                raise InternalServerError('Multiple models found by id query')
+            else:
+                return models[0].dump()
+        else:
+            # Multiple result
+            return [ x.dump() for x in models ]
 
-class StoreCreateFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.create feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The create api entry
+    def create(self, location, params, body):
+        """Create entry
         """
-        if self.location.features and not 'store.create' in self.location.features:
-            self.raiseFeatureNotSupported('store.create')
-        # Get the post body and parameters
-        if not context.request.content.data:
-            raise BadRequestError(reason = 'Require body')
-        body = context.request.content.data
-        model, overwrite, configs = body.get('model'), body.get('overwrite', False), body.get('configs')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Check feature
+        if location.features and not FEATURE_STORE_CREATE in location.features:
+            raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_CREATE)
+        model, configs = body.pop('model', None), body.pop('configs', None)
         if not model:
             raise BadRequestError(reason = 'Require model')
         # Create the model object
-        model = self.service.manager.modelClass(model)
-        # Check parameters
-        if not kwargs:
-            # No more parameters, call store.create
-            return self.service.__resourcerequest__(self.location, 'store.create', dict(model = model, overwrite = overwrite, configs = configs)).dump()
-        else:
-            # Found other parameters
-            if not self.location.params:
-                raise BadRequestError
-            # Set model
-            for key, value in kwargs.iteritems():
-                if not key in self.location.params:
-                    raise BadRequestError(reason = 'Unknown parameter [%s]' % key)
-                self.location.params[key].setModel(model, value)
-            return self.service.__resourcerequest__(self.location, 'store.create', dict(model = model, overwrite = overwrite, configs = configs)).dump()
-
-class StoreReplaceFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.replace feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The replace api entry
-        """
-        if self.location.features and not 'store.replace' in self.location.features:
-            self.raiseFeatureNotSupported('store.replace')
-        # Get the post body and parameters
-        if not context.request.content.data:
-            raise BadRequestError(reason = 'Require body')
-        body = context.request.content.data
-        model, configs = body.get('model'), body.get('configs')
         try:
-            # Check other parameters
-            if not kwargs:
-                # No more parameters, call store.replace
-                return self.service.__resourcerequest__(self.location, 'store.replace', dict(model = model, configs = configs)).dump()
-            else:
-                # Found other parameters
-                if not self.location.params:
-                    raise BadRequestError
-                # Set model
-                for key, value in kwargs.iteritems():
-                    if not key in self.location.params:
-                        raise BadRequestError(reason = 'Unknown parameter [%s]' % key)
-                    self.location.params[key].setModel(model, value)
-                return self.service.__resourcerequest__(self.location, 'store.replace', dict(model = model, configs = configs)).dump()
+            model = repo.cls(model)
+            # Get updates
+            updateActions = self.popModelAttributeUpdateActionsFromParams(location, params)
+            if updateActions:
+                model.update(updateActions)
+            # Validate the model
+            model.validate()
+        except DataModelError as error:
+            raise BadRequestError(reason = 'Invalid model. Error [%s]' % error)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
+        if body:
+            raise BadRequestError(reason = 'Invalid body')
+        # Call repository
+        try:
+            self.invoke(location, FEATURE_STORE_CREATE, repo.create, dict(model = model, configs = configs))
+        except DuplicatedKeyError:
+            raise BadRequestError(code = ERROR_DUPLICATED_KEY, reason = 'Duplicated key found')
+        # Done
+
+    def replace(self, location, params, body):
+        """Replace entry
+        """
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Check feature
+        if location.features and not FEATURE_STORE_REPLACE in location.features:
+            raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_REPLACE)
+        model, configs = body.pop('model', None), body.pop('configs', None)
+        if not model:
+            raise BadRequestError(reason = 'Require model')
+        # Create the model object
+        try:
+            model = repo.cls(model)
+            # Get updates
+            updateActions = self.popModelAttributeUpdateActionsFromParams(location, params)
+            if updateActions:
+                model.update(updateActions)
+            # Validate the model
+            model.validate()
+        except DataModelError as error:
+            raise BadRequestError(reason = 'Invalid model. Error [%s]' % error)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
+        if body:
+            raise BadRequestError(reason = 'Invalid body')
+        # Call repository
+        try:
+            self.invoke(location, FEATURE_STORE_REPLACE, repo.replace, dict(model = model, configs = configs))
         except ModelNotFoundError:
-            # The model not found
             raise NotFoundError
+        # Done
 
-class StoreUpdateFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.update / store.updates feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The update api entry
+    def update(self, location, params, body):
+        """Update entry
         """
-        # Get id or ids
-        ids = self.getIDs(kwargs)
-        # Get the post body and parameters
-        if not context.request.content.data:
-            raise BadRequestError(reason = 'Require body')
-        body = context.request.content.data
-        updates, configs = body.get('updates'), body.get('configs')
-        # Load updates
+        id, query = self.popIDFromParamsOrBody(params, body), self.popQueryFromBody(body)
+        if id and query:
+            raise BadRequestError(reason = 'Cannot both specify id and query')
+        if not id and not query:
+            raise BadRequestError(reason = 'Require id or query')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Get update actions and configs
+        updates, configs = body.pop('updates', None), body.pop('configs', None)
+        if not updates:
+            raise BadRequestError(reason = 'Require updates')
         try:
-            updates = [ loadUpdateAction(x) for x in updates ]
-        except DataHubError as error:
-            raise BadRequestError(reason = 'Data error [%s]' % error)
-        # Check other parameters
-        if not kwargs:
-            # No more parameters, call store.update or store.updates
-            if len(ids) == 1:
-                if self.location.features and not 'store.update' in self.location.features:
-                    self.raiseFeatureNotSupported('store.update')
-                try:
-                    return self.service.__resourcerequest__(self.location, 'store.update', dict(id = ids[0], updates = updates, configs = configs)).dump()
-                except ModelNotFoundError:
-                    # The model not found
-                    raise NotFoundError
+            updates = [ UpdateAction.load(x) for x in updates ]
+        except:
+            raise BadRequestError(reason = 'Invalid updates')
+        # Pop query
+        queryFromParams = self.popModelAttributeConditionsFromParams(location, params)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
+        if body:
+            raise BadRequestError(reason = 'Invalid body')
+        # Call repository
+        if query or queryFromParams:
+            if location.features and not FEATURE_QUERY_UPDATE in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_QUERY_UPDATE)
+            # Build query
+            query = [ query ] if query else []
+            if queryFromParams:
+                query.extend(queryFromParams)
+            if id:
+                if isinstance(id, basestring):
+                    query.append(KeyValueCondition(key = '_id', value = id))
+                else:
+                    query.append(KeyValuesCondition(key = '_id', values = id))
+            if len(query) == 1:
+                query = query[0]
             else:
-                if self.location.features and not 'store.updates' in self.location.features:
-                    self.raiseFeatureNotSupported('store.updates')
-                return self.service.__resourcerequest__(self.location, 'store.updates', dict(ids = ids, updates = updates, configs = configs)).dump()
-        else:
-            # Found other parameters
-            if not self.location.params:
-                raise BadRequestError
-            if self.location.features and not 'query.updates' in self.location.features:
-                self.raiseFeatureNotSupported('query.updates')
-            # Get conditions
-            conditions = [ KeyValueCondition(key = '_id', value = ids[0]) ] if len(ids) == 1 else [ KeyValuesCondition(key = '_id', values = ids) ]
-            for key, value in kwargs.iteritems():
-                if not key in self.location.params:
-                    raise BadRequestError(reason = 'Unknown parameter [%s]' % key)
-                conditions.append(self.location.params[key].getCondition(value))
-            # Update
-            return self.service.__resourcerequest__(self.location, 'query.updates', dict(
-                condition = AndCondition(conditions = conditions),
+                query = AndCondition(conditions = query)
+            # Call repository
+            return self.invoke(location, FEATURE_QUERY_UPDATE, repo.updateByQuery, dict(
+                query = query,
                 updates = updates,
                 configs = configs
-                )).dump()
+                ))
+        else:
+            if location.features and not FEATURE_STORE_UPDATE in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_UPDATE)
+            # Update a single document
+            return self.invoke(location, FEATURE_STORE_UPDATE, repo.update, dict(id = id, updates = updates, configs = configs))
 
-class QueryUpdatesFeatureEndpointHandler(FeatureEndpointHandler):
-    """The query updates feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query updates feature api entry
+    def delete(self, location, params, body):
+        """Delete entry
         """
-        body = context.request.content.data
-        # Get query from body
-        if not body:
-            raise BadRequestError(reason = 'Require body')
-        # Get condition
-        condition = self.getQueryCondition(body)
-        # Get updates
-        updates = body.pop('updates', None)
-        if not updates or not isinstance(updates, (list, tuple)):
-            raise BadRequestError(reason = 'Invalid updates')
-        updates = [ loadUpdateAction(x) for x in updates ]
-        # Get configs
-        configs = body.get('configs')
-        # Check the body
+        id, query = self.popIDFromParamsOrBody(params, body), self.popQueryFromBody(body)
+        if id and query:
+            raise BadRequestError(reason = 'Cannot both specify id and query')
+        if not id and not query:
+            raise BadRequestError(reason = 'Require id or query')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Pop configs
+        configs = body.pop('configs', None)
+        # Pop conditions
+        queryFromParams = self.popModelAttributeConditionsFromParams(location, params)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
-        if kwargs:
-            conditions = self.getConditionsFromParams(kwargs)
-            if condition:
-                conditions.append(condition)
-            condition = AndCondition(conditions = conditions)
-        # Call the feature
-        return self.service.__resourcerequest__(self.location, 'query.updates', dict(
-            condition = condition,
-            updates = updates,
-            configs = configs
-            )).dump()
-
-class StoreDeleteFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store.delete / store.deletes feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The delete api entry
-        """
-        # Get id or ids
-        ids = self.getIDs(kwargs)
-        # Check other parameters
-        if not kwargs:
-            # No more parameters, call store.delete or store.deletes
-            if len(ids) == 1:
-                if self.location.features and not 'store.delete' in self.location.features:
-                    self.raiseFeatureNotSupported('store.delete')
-                model = self.service.__resourcerequest__(self.location, 'store.delete', dict(id = ids[0]))
-                return model.dump() if model else None
+        # Run
+        if query or queryFromParams:
+            # Use query
+            if location.features and not FEATURE_QUERY_DELETE in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_QUERY_DELETE)
+            # Build query
+            query = [ query ] if query else []
+            if queryFromParams:
+                query.extend(queryFromParams)
+            if id:
+                if isinstance(id, basestring):
+                    query.append(KeyValueCondition(key = '_id', value = id))
+                else:
+                    query.append(KeyValuesCondition(key = '_id', values = id))
+            if len(query) == 1:
+                query = query[0]
             else:
-                if self.location.features and not 'store.deletes' in self.location.features:
-                    self.raiseFeatureNotSupported('store.deletes')
-                return self.service.__resourcerequest__(self.location, 'store.deletes', dict(ids = ids)).dump()
+                query = AndCondition(conditions = query)
+            # Call repository
+            return self.invoke(location, FEATURE_QUERY_DELETE, repo.deleteByQuery, dict(query = query, configs = configs))
         else:
-            # Found other parameters
-            if self.location.features and not 'query.deletes' in self.location.features:
-                self.raiseFeatureNotSupported('query.deletes')
-            # Get conditions
-            conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
-            # Call
-            return self.service.__resourcerequest__(self.location, 'query.deletes', dict(condition = AndCondition(conditions = conditions))).dump()
+            # Use id
+            if location.features and not FEATURE_STORE_DELETE in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_DELETE)
+            # Call repository
+            return self.invoke(location, FEATURE_STORE_DELETE, repo.delete, dict(id = id, configs = configs))
 
-class QueryDeletesFeatureEndpointHandler(FeatureEndpointHandler):
-    """The query deletes feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query updates feature api entry
+    def count(self, location, params, body):
+        """Count entry
         """
-        body = context.request.content.data
-        # Get query from body
-        if not body:
-            raise BadRequestError(reason = 'Require body')
-        # Get condition
-        condition = self.getQueryCondition(body)
-        # Get configs
-        configs = body.get('configs')
-        # Check the body
+        id, query = self.popIDFromParamsOrBody(params, body), self.popQueryFromBody(body)
+        if id and query:
+            raise BadRequestError(reason = 'Cannot both specify id and query')
+        # Get repository
+        repo = self.popRepositoryFromParams(params)
+        if not repo:
+            raise NotFoundError(reason = 'Repository not found')
+        # Pop conditions
+        queryFromParams = self.popModelAttributeConditionsFromParams(location, params)
+        # Pop configs
+        configs = body.pop('configs', None)
+        # Check params & body
+        if params:
+            raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
-        # Get conditions
-        if kwargs:
-            conditions = self.getConditionsFromParams(kwargs)
-            if condition:
-                conditions.append(condition)
-            condition = AndCondition(conditions = conditions)
-        # Call the feature
-        return self.service.__resourcerequest__(self.location, 'query.deletes', dict(condition = condition, configs = configs)).dump()
-
-class StoreCountFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store count feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query updates feature api entry
-        """
-        # Get id or ids
-        ids = self.getIDs(kwargs)
-        # Check other parameters
-        if not kwargs:
-            if self.location.features and not 'store.count' in self.location.features:
-                self.raiseFeatureNotSupported('store.count')
-            return self.service.__resourcerequest__(self.location, 'store.count', dict(ids = ids))
+        # Run
+        if query or queryFromParams:
+            # Use query
+            if location.features and not FEATURE_QUERY_COUNT in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_QUERY_COUNT)
+            # Build query
+            query = [ query ] if query else []
+            if queryFromParams:
+                query.extend(queryFromParams)
+            if id:
+                if isinstance(id, basestring):
+                    query.append(KeyValueCondition(key = '_id', value = id))
+                else:
+                    query.append(KeyValuesCondition(key = '_id', values = id))
+            if len(query) == 1:
+                query = query[0]
+            else:
+                query = AndCondition(conditions = query)
+            # Call repository
+            return self.invoke(location, FEATURE_QUERY_COUNT, repo.countByQuery, dict(query = query, configs = configs))
         else:
-            # Found other parameters
-            if self.location.features and not 'query.count' in self.location.features:
-                self.raiseFeatureNotSupported('query.count')
-            # Get conditions
-            conditions = self.getConditionsFromParams(kwargs)
-            conditions.append(KeyValueCondition(key = '_id', value = ids[0]) if len(ids) == 1 else KeyValuesCondition(key = '_id', values = ids))
-            # Call
-            return self.service.__resourcerequest__(self.location, 'query.count', dict(condition = AndCondition(conditions = conditions)))
-
-class QueryCountFeatureEndpointHandler(FeatureEndpointHandler):
-    """The query count feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query updates feature api entry
-        """
-        body = context.request.content.data
-        # Get query from body
-        if not body:
-            raise BadRequestError(reason = 'Require body')
-        # Get condition
-        condition = self.getQueryCondition(body)
-        # Check the body
-        if body:
-            raise BadRequestError(reason = 'Invalid body')
-        # Get conditions
-        if kwargs:
-            conditions = self.getConditionsFromParams(kwargs)
-            if condition:
-                conditions.append(condition)
-            condition = AndCondition(conditions = conditions)
-        # Call the feature
-        return self.service.__resourcerequest__(self.location, 'query.count', dict(condition = condition))
-
-class StoreCountAllFeatureEndpointHandler(FeatureEndpointHandler):
-    """The store count all feature endpoint handler
-    """
-    def __call__(self, **kwargs):
-        """The query updates feature api entry
-        """
-        # Check other parameters
-        if not kwargs:
-            if self.location.features and not 'store.countall' in self.location.features:
-                self.raiseFeatureNotSupported('store.countall')
-            return self.service.__resourcerequest__(self.location, 'store.countall')
-        else:
-            # Found other parameters
-            if self.location.features and not 'query.count' in self.location.features:
-                self.raiseFeatureNotSupported('query.count')
-            # Get conditions
-            conditions = self.getConditionsFromParams(kwargs)
-            # Call
-            return self.service.__resourcerequest__(self.location, 'query.count', dict(condition = AndCondition(conditions = conditions)))
-
-class GeneralFeatureEndpointHandler(FeatureEndpointHandler):
-    """The general feature endpoint handler
-    """
-    def __init__(self, service, location, handlers):
-        """Create a new FeatureEndpointHandler
-        """
-        self.handlers = handlers
-        # Super
-        super(GeneralFeatureEndpointHandler, self).__init__(service, location)
-
-    def __call__(self, featureName, **kwargs):
-        """The general feature api entry
-        """
-        if not featureName in self.handlers:
-            raise BadRequestError(reason = 'Feature [%s] not supported' % featureName)
-        # Call the handler
-        return self.handlers[featureName](**kwargs)
+            # Count id or all
+            if location.features and not FEATURE_STORE_COUNT in location.features:
+                raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_COUNT)
+            # Call repository
+            return self.invoke(location, FEATURE_STORE_COUNT, repo.count, dict(id = id))
