@@ -191,7 +191,7 @@ class DataModel(object):
             if field.required and (not self.__existvalue__(name) or field.isEmpty(self.__getvalue__(name))):
                 raise MissingRequiredFieldError(name)
 
-    def validate(self, attr = True, required = True, continueOnError = True):
+    def validate(self, attr = True, required = True, continueOnError = False):
         """Validate this model
         Parameters:
             attr                            Validate the attribute or not

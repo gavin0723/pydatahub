@@ -10,9 +10,9 @@
 """
 
 from resource import ResourceService, ParamRepoSelector, ResourceLocation
-from connector import Connection, HttpConnection, HttpsConnection, ResourceConnector
+from connector import Connection, HttpConnection, ResourceConnector
 
 __all__ = [
     'ResourceService', 'ParamRepoSelector', 'ResourceLocation',
-    'Connection', 'ResourceConnector', 'HttpConnection', 'HttpsConnection'
+    'Connection', 'ResourceConnector', 'HttpConnection'
     ]

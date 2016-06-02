@@ -197,13 +197,16 @@ class ResourceService(Service):
         # Done
         return handler
 
-    def getLocationPath(self, location, path):
+    def getLocationPath(self, location, path = None):
         """Get location path
         """
-        if location.path.endswith('/'):
-            return location.path + path[1: ]
+        if path:
+            if location.path.endswith('/'):
+                return location.path + path[1: ]
+            else:
+                return location.path + path
         else:
-            return location.path + path
+            return location.path or '/'
 
     def createEndpoints4Location(self, location):
         """Create the endpoint for a feature
@@ -231,7 +234,7 @@ class ResourceService(Service):
             FEATURE_QUERY_EXIST in location.features:
             # Create endpoint
             endpoint = Endpoint(self.getEndpointHandler(location, self.exist))
-            head(path = self.getLocationPath(location, '/'))(endpoint)
+            head(path = self.getLocationPath(location))(endpoint)
             head(path = self.getLocationPath(location, '/<id>'))(endpoint)
             yield 'exist', endpoint
         # The get feature
@@ -239,26 +242,27 @@ class ResourceService(Service):
             FEATURE_STORE_GET in location.features or \
             FEATURE_QUERY_GET in location.features:
             endpoint = Endpoint(self.getEndpointHandler(location, self.get))
-            get(path = self.getLocationPath(location, '/'))(endpoint)
+            get(path = self.getLocationPath(location))(endpoint)
             get(path = self.getLocationPath(location, '/<id>'))(endpoint)
             post(path = self.getLocationPath(location, '/_query'))(endpoint)
             yield 'get', endpoint
         # Get create feature
         if not location.features or FEATURE_STORE_CREATE in location.features:
             endpoint = Endpoint(self.getEndpointHandler(location, self.create))
-            post(path = self.getLocationPath(location, '/'))(endpoint)
+            post(path = self.getLocationPath(location))(endpoint)
+            #post(path = self.getLocationPath(location, '/'))(endpoint)
             yield 'create', endpoint
         # The replace feature
         if not location.features or FEATURE_STORE_REPLACE in location.features:
             endpoint = Endpoint(self.getEndpointHandler(location, self.replace))
-            put(path = self.getLocationPath(location, '/'))(endpoint)
+            put(path = self.getLocationPath(location))(endpoint)
             yield 'replace', endpoint
         # The update feature
         if not location.features or \
             FEATURE_STORE_UPDATE in location.features or \
             FEATURE_QUERY_UPDATE in location.features:
             endpoint = Endpoint(self.getEndpointHandler(location, self.update))
-            patch(path = self.getLocationPath(location, '/'))(endpoint)
+            patch(path = self.getLocationPath(location))(endpoint)
             patch(path = self.getLocationPath(location, '/<id>'))(endpoint)
             yield 'update', endpoint
         # The delete feature
@@ -266,7 +270,7 @@ class ResourceService(Service):
             FEATURE_STORE_DELETE in location.features or \
             FEATURE_QUERY_DELETE in location.features:
             endpoint = Endpoint(self.getEndpointHandler(location, self.delete))
-            delete(path = self.getLocationPath(location, '/'))(endpoint)
+            delete(path = self.getLocationPath(location))(endpoint)
             delete(path = self.getLocationPath(location, '/<id>'))(endpoint)
             yield 'delete', endpoint
         # The count feature
@@ -361,6 +365,11 @@ class ResourceService(Service):
             if not self.invoke(location, FEATURE_STORE_EXIST, repo.exist, dict(id = id, configs = configs)):
                 raise NotFoundError
 
+    def afterGet(self, repository, model, configs):
+        """Process the model before get return
+        """
+        return model
+
     def get(self, location, params, body):
         """Exist entry
         """
@@ -426,9 +435,9 @@ class ResourceService(Service):
             # Call repository
             models = self.invoke(location, FEATURE_STORE_GET, repo.get, dict(id = id, configs = configs))
         # Return result
+        models = filter(lambda x: x, map(lambda x: self.afterGet(repo, x, configs), models))
         if isinstance(id, basestring):
             # A single result
-            models = list(models)
             if not models:
                 raise NotFoundError
             elif len(models) != 1:
@@ -438,6 +447,11 @@ class ResourceService(Service):
         else:
             # Multiple result
             return [ x.dump() for x in models ]
+
+    def beforeCreate(self, repository, model, configs):
+        """Before the create write
+        """
+        return model
 
     def create(self, location, params, body):
         """Create entry
@@ -468,12 +482,21 @@ class ResourceService(Service):
             raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
+        # Before create write
+        model = self.beforeCreate(repo, model, configs)
+        if not model:
+            raise BadRequestError(reason = 'No model to create')
         # Call repository
         try:
             self.invoke(location, FEATURE_STORE_CREATE, repo.create, dict(model = model, configs = configs))
         except DuplicatedKeyError:
             raise BadRequestError(code = ERROR_DUPLICATED_KEY, reason = 'Duplicated key found')
         # Done
+
+    def beforeReplace(self, repository, model, configs):
+        """Before the replace write
+        """
+        return model
 
     def replace(self, location, params, body):
         """Replace entry
@@ -504,6 +527,10 @@ class ResourceService(Service):
             raise BadRequestError(reason = 'Invalid parameter')
         if body:
             raise BadRequestError(reason = 'Invalid body')
+        # Before create write
+        model = self.beforeReplace(repo, model, configs)
+        if not model:
+            raise BadRequestError(reason = 'No model to replace')
         # Call repository
         try:
             self.invoke(location, FEATURE_STORE_REPLACE, repo.replace, dict(model = model, configs = configs))
@@ -567,6 +594,11 @@ class ResourceService(Service):
             # Update a single document
             return self.invoke(location, FEATURE_STORE_UPDATE, repo.update, dict(id = id, updates = updates, configs = configs))
 
+    def afterDelete(self, repository, count):
+        """After delete
+        """
+        pass
+
     def delete(self, location, params, body):
         """Delete entry
         """
@@ -607,13 +639,21 @@ class ResourceService(Service):
             else:
                 query = AndCondition(conditions = query)
             # Call repository
-            return self.invoke(location, FEATURE_QUERY_DELETE, repo.deleteByQuery, dict(query = query, configs = configs))
+            count = self.invoke(location, FEATURE_QUERY_DELETE, repo.deleteByQuery, dict(query = query, configs = configs))
+            # After delete
+            self.afterDelete(repo, count)
+            # Done
+            return count
         else:
             # Use id
             if location.features and not FEATURE_STORE_DELETE in location.features:
                 raise BadRequestError(reason = 'Unsupported feature [%s]' % FEATURE_STORE_DELETE)
             # Call repository
-            return self.invoke(location, FEATURE_STORE_DELETE, repo.delete, dict(id = id, configs = configs))
+            count = self.invoke(location, FEATURE_STORE_DELETE, repo.delete, dict(id = id, configs = configs))
+            # After delete
+            self.afterDelete(repo, count)
+            # Done
+            return count
 
     def count(self, location, params, body):
         """Count entry

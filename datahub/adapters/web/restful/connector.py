@@ -78,56 +78,24 @@ class Connection(object):
 class HttpConnection(Connection):
     """The http connection based on requests
     """
-    def __init__(self, host, port, session = None):
+    def __init__(self, host, port, scheme = 'http', cert = None, key = None, verify = True, session = None):
         """Create a new Connection
         Parameters:
             host                            The restful web service host
             port                            The restful web service port
             session                         The request session object
         """
+        # Check scheme and parameters
+        if scheme != 'http' and scheme != 'https':
+            raise ValueError('Invalid scheme, must be either http or https')
+        if cert and not key or not cert and key:
+            raise ValueError('Must provide cert with key at the same time')
+        if cert and scheme != 'https':
+            raise ValueError('Scheme must be https when setting cert')
+        # Set parameters
         self.host = host
         self.port = port
-        self.session = session or requests.Session()
-
-    def request(self, method, path, json = None, **kwargs):
-        """Send a request
-        Parameters:
-            method                                  The request method
-            path                                    The request path
-            json                                    The json object to send as payload
-        Returns:
-            requests.Response object
-        """
-        url = 'http://%s:%d/%s' % (self.host, self.port, path or '')
-        # Do json serialize if json
-        if json:
-            if kwargs.get('data'):
-                raise ValueError('Cannot set json and data at the same time')
-            # Serialize json to data
-            kwargs['data'] = _json.dumps(json, ensure_ascii = False).encode('utf8')
-            # Set header
-            if kwargs.get('headers'):
-                kwargs['headers']['Content-Type'] = 'application/json; charset=utf-8'
-            else:
-                kwargs['headers'] = { 'Content-Type': 'application/json; charset=utf-8' }
-        # Send
-        return self.session.request(method, url, **kwargs)
-
-class HttpsConnection(Connection):
-    """The https connection based on requests
-    """
-    def __init__(self, host, port, cert = None, key = None, verify = True, session = None):
-        """Create a new Connection
-        Parameters:
-            host                            The restful web service host
-            port                            The restful web service port
-            cert                            The certificate file path in PEM format when using ssl client certificate authentication
-            key                             The private key file path in PEM format when using ssl client certificate authentication
-            verify                          Whether verify the service certificate or not
-            session                         The request session object
-        """
-        self.host = host
-        self.port = port
+        self.scheme = scheme
         self.cert = cert
         self.key = key
         self.verify = verify
@@ -142,7 +110,9 @@ class HttpsConnection(Connection):
         Returns:
             requests.Response object
         """
-        url = 'http://%s:%d/%s' % (self.host, self.port, path or '')
+        if path and path.startswith('/'):
+            path = path[1: ]
+        url = '%s://%s:%d/%s' % (self.scheme, self.host, self.port, path or '')
         # Do json serialize if json
         if json:
             if kwargs.get('data'):
@@ -154,11 +124,12 @@ class HttpsConnection(Connection):
                 kwargs['headers']['Content-Type'] = 'application/json; charset=utf-8'
             else:
                 kwargs['headers'] = { 'Content-Type': 'application/json; charset=utf-8' }
-        # Set https config
-        if not 'verify' in kwargs and not self.verify is None:
-            kwargs['verify'] = verify
-        if not 'cert' in kwargs and self.cert and self.key:
-            kwargs['cert'] = (self.cert, self.key)
+        if self.scheme == 'https':
+            # Set https config
+            if not 'verify' in kwargs and not self.verify is None:
+                kwargs['verify'] = verify
+            if not 'cert' in kwargs and self.cert and self.key:
+                kwargs['cert'] = (self.cert, self.key)
         # Send
         return self.session.request(method, url, **kwargs)
 
@@ -387,7 +358,7 @@ class ResourceConnector(object):
         # Done
         return _json.loads(rsp.content)['value']
 
-    def watch(self, url, query = None):
+    def watch(self, url, query = None, configs = None):
         """Watch the resource
         Returns:
             A tuple of (List of models, Watcher)
