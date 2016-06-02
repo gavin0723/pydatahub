@@ -41,4 +41,3 @@ def teardown():
     # Teardown
     mongoClient.drop_database(mongoDatabase)
     mongoClient.close()
-

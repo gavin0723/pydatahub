@@ -14,7 +14,6 @@ from datetime import datetime, date, time, timedelta
 
 from datahub.model import metadata, IDDataModel, DataModel, StringType, IntegerType, FloatType, BooleanType, DatetimeType, DateType, TimeType, TimeDeltaType, \
     ListType, SetType, DictType, ModelType, DynamicModelType, AnyType
-from datahub.manager import Resource
 
 class ATestSubModel(DataModel):
     """The sub model
@@ -25,6 +24,11 @@ class ATestSubModel(DataModel):
 class ATestModel(IDDataModel):
     """The test model
     """
+    def selectModel(value, model, container):
+        """Select the model
+        """
+        return ATestSubModel
+
     stringType = StringType()
     intType = IntegerType()
     floatType = FloatType()
@@ -37,17 +41,11 @@ class ATestModel(IDDataModel):
     setType = SetType(StringType())
     dictType = DictType(ModelType(ATestSubModel))
     modelType = ModelType(ATestSubModel)
-    dynamicModelType = DynamicModelType()
+    dynamicModelType = DynamicModelType(selectModel)
     anyType = AnyType()
     defaultType = StringType(required = True, default = 'defaultValue')
     requiredType = StringType(required = True)
     defaultType2 = StringType(default = 'defaultValue2')
-
-    @dynamicModelType.modelClassSelector
-    def selectModel(value, context):
-        """Select the model
-        """
-        return ATestSubModel
 
 def createBigModel():
     """Create a new big model
@@ -75,8 +73,8 @@ def createBigModel():
     return model
 
 @metadata(namespace = 'testresource')
-class TestResource(Resource):
-    """The test resource
+class TestResource(IDDataModel):
+    """The test model
     """
     # The name
     name = StringType(required = True)

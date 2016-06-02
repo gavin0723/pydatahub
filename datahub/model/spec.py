@@ -9,6 +9,7 @@
 
 """
 
+from sets import Set
 from collections import namedtuple
 
 FILEDS_NAME         = '_datahub_datamodel_fields'
@@ -24,46 +25,35 @@ class NullValue(object):
     def __eq__(self, other):
         """==
         """
-        return False
+        return isinstance(other, NullValue)
 
     def __ne__(self, other):
         """!=
         """
-        return True
+        return not isinstance(other, NullValue)
 
 nullValue = NullValue()
 
 class ModelMetadata(object):
     """The model metadata
-
-    :param strict:
-        If the data model is strict or not. Model will be validated after each change of the model (including the initialization).
-    :param autoInitialize:
-        The model will assign all default values to the fields which haven't given any data when creating the model if true.
+    Attributes:
+        namespace                           The model namespace
+        strict                              Whether the model is strict
+        attrs                               The metadata attributes
+        none                                Return None if the field is not assigned
     """
-    def __init__(
-        self,
-        namespace = None,
-        strict = False,
-        none4Unassigned = True,
-        unknownField = None,
-        continueOnError = True,
-        autoInitialize = True,
-        indices = None,
-        expires = None
-        ):
+    def __init__(self, namespace = None, strict = False, attrs = None, none = True):
         """Create a new ModelMetadata
         """
-        self.namespace = namespace
+        self.none = none
+        self.attrs = attrs or []
         self.strict = strict
-        self.none4Unassigned = none4Unassigned
-        self.unknownField = unknownField or UNKNOWN_FIELD_ERROR
-        if self.unknownField != UNKNOWN_FIELD_IGNORE and self.unknownField != UNKNOWN_FIELD_ERROR:
-            raise ValueError('Unknown value of parameter "unknownField"')
-        self.continueOnError = continueOnError
-        self.autoInitialize = autoInitialize
-        self.indices = indices
-        self.expires = expires
+        self.namespace = namespace
+
+    def getAttrs(self, name):
+        """Get attributes by name
+        """
+        return filter(lambda x: x.NAME == name, self.attrs)
 
     @staticmethod
     def getDefault():
@@ -81,24 +71,6 @@ class ModelMetadata(object):
 
 # This is the default model metadata which will be used by any models that doesnt' define a metadata
 DEFAULT_MODEL_METADATA = ModelMetadata()
-
-class ModelIndex(object):
-    """The model index
-    """
-    def __init__(self, keys, unique = False, sparse = False):
-        """Create a new ModelIndex
-        """
-        self.keys = keys
-        self.unique = unique
-        self.sparse = sparse
-
-LoadContext = namedtuple('LoadContext', 'key,raw,model')
-
-EMPTY_LOAD_CONTEXT = LoadContext(None, None, None)
-
-ValidateContext = namedtuple('ValidateContext', 'continueOnError')
-
-DEFAULT_VALIDATE_CONTEXT = ValidateContext(False)
 
 class DumpContext(object):
     """The dump context
@@ -129,3 +101,31 @@ class DumpContext(object):
         DEFAULT_DUMP_CONTEXT = context
 
 DEFAULT_DUMP_CONTEXT = DumpContext()
+
+# The metadata attributes
+
+class IndexAttr(object):
+    """The index attribute
+    """
+    NAME = 'index'
+
+    def __init__(self, keys, unique = False, sparse = False):
+        """Create a new ModelIndex
+        """
+        self.keys = keys
+        self.unique = unique
+        self.sparse = sparse
+
+class ExpireAttr(object):
+    """The expire attr
+    """
+    NAME = 'expire'
+
+    def __init__(self, key, expires = None):
+        """Create a new ExpireAttr
+        Parameters:
+            key                                 The key
+            expires                             The expire seconds, the model will be expired in this time period
+        """
+        self.key = key
+        self.expires = expires or 0

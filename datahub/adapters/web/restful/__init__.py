@@ -9,7 +9,10 @@
 
 """
 
-from resource import ResourceService, KeyValueAttributeParameterMapper, ResourceLocation
-from connector import Connection, ResourceConnector
+from resource import ResourceService, ParamRepoSelector, ResourceLocation
+from connector import Connection, HttpConnection, ResourceConnector
 
-__all__ = [ 'ResourceService', 'KeyValueAttributeParameterMapper', 'ResourceLocation', 'Connection', 'ResourceConnector' ]
+__all__ = [
+    'ResourceService', 'ParamRepoSelector', 'ResourceLocation',
+    'Connection', 'ResourceConnector', 'HttpConnection'
+    ]
