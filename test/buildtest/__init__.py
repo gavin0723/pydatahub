@@ -28,7 +28,10 @@ def setup():
     global mongoClient
     global mongoDatabase
     # Setup
-    mongoClient = MongoClient(host = os.environ[ENVKEY_MONGODB_URL])
+    mongoAddr = os.environ.get(ENVKEY_MONGODB_URL)
+    if not mongoAddr:
+        raise ValueError('Mongodb test url / host not found')
+    mongoClient = MongoClient(host = mongoAddr)
     mongoDatabase = mongoClient['test_%s' % uuid4()]
     # Set builtin
     __builtin__.mongodb = mongoDatabase

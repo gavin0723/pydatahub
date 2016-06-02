@@ -703,7 +703,7 @@ class DictType(DataType):
         """Dump the value
         """
         if not self.isEmpty(value):
-            return dict(map(lambda (k, v): (k, self.itemType.dump(v, context)), value.iteritems()))
+            return dict(map(lambda (k, v): (k, self.itemType.dump(v, model, container, context)), value.iteritems()))
         else:
             return value
 
