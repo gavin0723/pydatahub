@@ -12,52 +12,19 @@
 from datahub.model import nullValue, DataModel, DataType, StringType, BooleanType, ListType, ModelType, AnyType
 from datahub.errors import BadValueError
 
-def loadCondition(value):
-    """Load the condition
-    """
-    if len(value) != 1:
-        raise BadValueError('Condition dict must have only one key and value')
-    k, v = value.keys()[0], value.values()[0]
-    if not k in CONDITIONS:
-        raise BadValueError('Condition [%s] not found' % k)
-    return CONDITIONS[k](value)
-
 class ConditionType(ModelType):
     """The condition data type
+    NOTE:
+        Actually this type is not necessary any more. Use ModelType is enough, but for forward compatible.
     """
-    def __init__(self,
-        name = None,
-        required = False,
-        default = nullValue,
-        loader = None,
-        dumper = None,
-        validator = None,
-        choices = None,
-        dumpEmpty = None,
-        doc = None
-        ):
+    def __init__(self, *args, **kwargs):
         """Create a new ConditionType
         """
-        super(ConditionType, self).__init__(Condition, name, required, default, loader, dumper, validator, choices, dumpEmpty, doc)
-
-    def __loadmodel__(self, modelClass, value, loadContext):
-        """Load the model
-        """
-        return loadCondition(value)
+        super(ConditionType, self).__init__(Condition, *args, **kwargs)
 
 class Condition(DataModel):
     """The condition
     """
-    def __init__(self, raw = None, **kwargs):
-        """Create a new Condition
-        """
-        if raw:
-            if len(raw) != 1:
-                raise ValueError('The length of the dict of condition must be 1')
-            super(Condition, self).__init__(raw.values()[0], **kwargs)
-        else:
-            super(Condition, self).__init__(raw, **kwargs)
-
     def check(self, model):
         """Check if the model satisfy the condition
         Returns:
@@ -68,10 +35,18 @@ class Condition(DataModel):
     def dump(self, context = None):
         """Dump this condition
         """
-        # Dump the values
-        rawDumpValue = super(Condition, self).dump(context)
-        # Wrap the raw dump value by name
-        return { self.NAME: rawDumpValue }
+        return { self.NAME: super(Condition, self).dump(context) }
+
+    @classmethod
+    def load(cls, raw, continueOnError = False):
+        """Load the condition object
+        """
+        if len(raw) != 1:
+            raise BadValueError('Condition dict must have only one key and value')
+        k, v = raw.keys()[0], raw.values()[0]
+        if not k in CONDITIONS:
+            raise BadValueError('Condition [%s] not found' % k)
+        return CONDITIONS[k](v, __continueOnError__ = continueOnError)
 
 class AndCondition(Condition):
     """And condition
@@ -140,6 +115,7 @@ class KeyValueCondition(Condition):
             for v in model.query(self.key):
                 if v == self.value:
                     return True
+            # Done
         else:
             # Not equals
             #   - Has field not equals to the value
@@ -173,6 +149,7 @@ class KeyValuesCondition(Condition):
             for v in model.query(self.key):
                 if v in self.values:
                     return True
+            # Done
         else:
             # Not includes
             #   - Has field not in the values
@@ -184,6 +161,7 @@ class KeyValuesCondition(Condition):
                 hasValue = True
             if not hasValue:
                 return True
+            # Done
         return False
 
 class ExistCondition(Condition):
@@ -200,6 +178,7 @@ class ExistCondition(Condition):
         """
         for v in model.query(self.key):
             return True
+        # Done
         return False
 
 class NonExistCondition(Condition):
@@ -216,12 +195,13 @@ class NonExistCondition(Condition):
         """
         for v in model.query(self.key):
             return False
+        # Done
         return True
 
-class LargerCondition(Condition):
-    """The larger condition
+class GreaterCondition(Condition):
+    """The greater condition
     """
-    NAME = 'larger'
+    NAME = 'greater'
 
     key = StringType(required = True)
     value = AnyType(required = True)
@@ -239,12 +219,13 @@ class LargerCondition(Condition):
             else:
                 if v > self.value:
                     return True
+        # Done
         return False
 
-class SmallerCondition(Condition):
-    """The smaller condition
+class LesserCondition(Condition):
+    """The lesser condition
     """
-    NAME = 'smaller'
+    NAME = 'lesser'
 
     key = StringType(required = True)
     value = AnyType(required = True)
@@ -262,6 +243,7 @@ class SmallerCondition(Condition):
             else:
                 if v < self.value:
                     return True
+        # Done
         return False
 
 CONDITIONS = dict(map(lambda x: (x.NAME, x), (
@@ -272,6 +254,6 @@ CONDITIONS = dict(map(lambda x: (x.NAME, x), (
     KeyValuesCondition,
     ExistCondition,
     NonExistCondition,
-    LargerCondition,
-    SmallerCondition
+    GreaterCondition,
+    LesserCondition
     )))

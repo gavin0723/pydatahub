@@ -12,60 +12,36 @@
 from datahub.model import nullValue, DataModel, ModelType, StringType, BooleanType, IntegerType, AnyType, ListType
 from datahub.errors import BadValueError
 
-def loadUpdateAction(value):
-    """Load the update action
-    """
-    if len(value) != 1:
-        raise BadValueError('Update action dict must have only one key and value')
-    k, v = value.keys()[0], value.values()[0]
-    if not k in ACTIONS:
-        raise BadValueError('Update action [%s] not found' % k)
-    return ACTIONS[k](v)
-
 class UpdateActionType(ModelType):
     """The update action data type
+    NOTE:
+        Actually this type is not necessary any more. Use ModelType is enough, but for forward compatible.
     """
-    def __init__(self,
-        name = None,
-        required = False,
-        default = nullValue,
-        loader = None,
-        dumper = None,
-        validator = None,
-        choices = None,
-        dumpEmpty = None,
-        doc = None
-        ):
-        """Create a new UpdateActionType
+    def __init__(self, *args, **kwargs):
+        """Create a new UpdateAction
         """
-        super(UpdateActionType, self).__init__(Condition, name, required, default, loader, dumper, validator, choices, dumpEmpty, doc)
-
-    def __loadmodel__(self, modelClass, value, loadContext):
-        """Load the model
-        """
-        return loadUpdateAction(value)
+        super(UpdateAction, self).__init__(UpdateAction, *args, **kwargs)
 
 class UpdateAction(DataModel):
     """The update action
     """
     key = StringType(required = True, doc = 'The update key')
 
-    def getMatchedObjects(self, model):
-        """Get the matched objects
-        Returns:
-            Yield of object
+    def dump(self, context = None):
+        """Dump this condition
         """
-        keys = key.spilt('.')
+        return { self.NAME: super(UpdateAction, self).dump(context) }
 
-    def execute(self, model):
-        """Execute the update action on the model
+    @classmethod
+    def load(cls, raw, continueOnError = False):
+        """Load the condition object
         """
-        raise NotImplementedError
-
-    def dumpAsRoot(self):
-        """Dump this condition as root
-        """
-        return { self.NAME: self.dump() }
+        if len(raw) != 1:
+            raise BadValueError('Update action dict must have only one key and value')
+        k, v = raw.keys()[0], raw.values()[0]
+        if not k in ACTIONS:
+            raise BadValueError('Update action [%s] not found' % k)
+        return ACTIONS[k](v, __continueOnError__ = continueOnError)
 
 class PushAction(UpdateAction):
     """The update action
@@ -98,11 +74,6 @@ class SetAction(UpdateAction):
     NAME = 'set'
     # The value
     value = AnyType(required = True)
-
-    def execute(self, model):
-        """Execute the update action on the model
-        """
-        raise NotImplementedError
 
 class ClearAction(UpdateAction):
     """Clear action

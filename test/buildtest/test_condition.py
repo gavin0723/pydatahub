@@ -9,7 +9,7 @@
 
 """
 
-from datahub.conditions import loadCondition, AndCondition, KeyValueCondition
+from datahub.conditions import Condition, AndCondition, KeyValueCondition
 
 def test_condition_basic():
     """Test the condition basic
@@ -27,7 +27,7 @@ def test_condition_basic():
             ]
         }
     }
-    condition = loadCondition(js)
+    condition = Condition.load(js)
     assert isinstance(condition, AndCondition)
     assert len(condition.conditions) == 1
     assert isinstance(condition.conditions[0], KeyValueCondition)

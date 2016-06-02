@@ -14,10 +14,11 @@ import os
 from uuid import uuid4
 from binascii import b2a_hex
 
-from datahub.errors import DataModelError, NestedDataModelError, UnknownFieldError, MissingRequiredFieldError
+from datahub.errors import DataModelError, CompoundDataModelError, NestedDataModelError, UnknownFieldError, \
+    MissingRequiredFieldError, FieldNotDumpError, QueryNotMatchError
 
 from spec import *
-from _types import DataType, StringType
+from _types import DataType, StringType, FloatType, DatetimeType, DictType, ModelType
 
 class DataModelMetaClass(type):
     """The data model meta class
@@ -49,51 +50,65 @@ class DataModel(object):
     """
     __metaclass__ = DataModelMetaClass
 
-    def __init__(self, raw = None, **kwargs):
+    def __init__(self, __raw__ = None, __continueOnError__ = False, **kwargs):
         """Create a new DataModel
         """
-        rawValues = raw or {}
-        rawValues.update(kwargs)
+        container = __raw__ or {}
+        container.update(kwargs)
         # Initialize the stores
         setattr(self, STORE_NAME, {})
         # Get all fields
         fields = getattr(type(self), FILEDS_NAME)
         # Get metadata
         metadata = getattr(type(self), METADATA_NAME) if hasattr(type(self), METADATA_NAME) else ModelMetadata.getDefault()
+        # All errors
+        errors = []
         # Load values
-        nestedError = None
-        for key, value in rawValues.iteritems():
+        for key, value in container.iteritems():
             if not key in fields:
                 # Key not found
-                if metadata.unknownField == UNKNOWN_FIELD_IGNORE:
-                    continue
-                else:
-                    # Set error
-                    if not nestedError:
-                        nestedError = NestedDataModelError({}, rawValues)
-                    nestedError.errors[key] = UnknownFieldError(key, rawValues)
-                    # Check continue or not
-                    if not metadata.continueOnError:
-                        break
+                error = UnknownFieldError(key)
+                if not __continueOnError__:
+                    raise error
+                # Add error
+                errors.append(error)
             else:
                 # Load the value
                 try:
-                    self.__setvalue__(key, fields[key].load(value, LoadContext(key, rawValues, self), ValidateContext(metadata.continueOnError)))
+                    self.__setvalue__(key, fields[key].load(value, self, container))
                 except Exception as error:
                     # Set error
-                    if not nestedError:
-                        nestedError = NestedDataModelError({}, rawValues)
-                    nestedError.errors[key] = error
-                    if not metadata.continueOnError:
-                        break
-        # Check error
-        if nestedError:
-            raise nestedError
+                    if not __continueOnError__:
+                        raise
+                    # Add error
+                    errors.append(error)
+        # Set default
+        for name, field in fields.iteritems():
+            if not self.__existvalue__(name) and field.hasDefault():
+                try:
+                    self.__setvalue__(name, field.load(field.getDefault(), self, None))
+                except Exception as error:
+                    # Set error
+                    if not __continueOnError__:
+                        raise error
+                    # Add error
+                    errors.append(error)
         # Check required
         if metadata.strict:
-            self.validateRequiredFields()
-        if metadata.autoInitialize:
-            self.initialize()
+            try:
+                self._validateRequiredFields(fields, metadata)
+            except Exception as error:
+                # Set error
+                if not __continueOnError__:
+                    raise error
+                # Add error
+                errors.append(error)
+        # Check error
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            else:
+                raise CompoundDataModelError(errors, 'Failed to initialize model (%s)' % type(self).__name__)
 
     def __existvalue__(self, key):
         """Get if exist a raw value
@@ -109,6 +124,30 @@ class DataModel(object):
         """Set the raw value
         """
         getattr(self, STORE_NAME)[key] = value
+
+    def __getitem__(self, key):
+        """Get item
+        """
+        if not key in getattr(self, STORE_NAME):
+            raise KeyError(key)
+        # Get
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        """Set item
+        """
+        if not key in getattr(self, STORE_NAME):
+            raise KeyError(key)
+        # Set
+        setattr(self, key, value)
+
+    def __delitem__(self, key):
+        """Delete item
+        """
+        if not key in getattr(self, STORE_NAME):
+            raise KeyError(key)
+        # Delete
+        delattr(self, key)
 
     def __eq__(self, that):
         """Equals
@@ -140,25 +179,70 @@ class DataModel(object):
         """
         return not self.__eq__(that)
 
-    def initialize(self):
-        """Initialize all fields
+    def _validateRequiredFields(self, fields = None, metadata = None):
+        """Validate the required fields
+        """
+        # Get all fields
+        fields = fields or getattr(type(self), FILEDS_NAME)
+        # Get metadata
+        metadata = metadata or (getattr(type(self), METADATA_NAME) if hasattr(type(self), METADATA_NAME) else ModelMetadata.getDefault())
+        # Check required
+        for name, field in fields.iteritems():
+            if field.required and (not self.__existvalue__(name) or field.isEmpty(self.__getvalue__(name))):
+                raise MissingRequiredFieldError(name)
+
+    def validate(self, attr = True, required = True, continueOnError = False):
+        """Validate this model
+        Parameters:
+            attr                            Validate the attribute or not
+            required                        Validate the required constraint or not
+            continueOnError                 Continue validation on error
+        Returns:
+            Nothing
         """
         # Get all fields
         fields = getattr(type(self), FILEDS_NAME)
         # Get metadata
         metadata = getattr(type(self), METADATA_NAME) if hasattr(type(self), METADATA_NAME) else ModelMetadata.getDefault()
-        # Check all fields which has a default value but not assigned by any data
-        for name, field in fields.iteritems():
-            if not self.__existvalue__(name) and field.hasDefault():
-                self.__setvalue__(name, field.load(field.getDefault(), LoadContext(name, None, self), ValidateContext(metadata.continueOnError)))
+        # Validation errors
+        errors = []
+        # Check required
+        try:
+            if required:
+                self._validateRequiredFields(fields, metadata)
+        except Exception as error:
+            # Check error
+            if not continueOnError:
+                raise
+            # Found error
+            errors.append(error)
+        # Check the fields
+        if attr:
+            for name, field in fields.iteritems():
+                if self.__existvalue__(name):
+                    try:
+                        field.validate(self.__getvalue__(name), required, continueOnError)
+                    except Exception as error:
+                        # Check error
+                        if not continueOnError:
+                            raise
+                        # Found error
+                        errors.append(NestedDataModelError(name, error))
+        # Check errors
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            else:
+                raise CompoundDataModelError(errors, 'Failed to validate model (%s)' % type(self).__name__)
 
-    def query(self, path):
-        """Query value by path
-        Parameters:
-            path                    A string path
+    def queryMySelf(self, path):
+        """Query myself
         Returns:
-            Yield of found value
+            (type, name, value, NextPath)
+        Error:
+            QueryNotMatchError
         """
+        # Parse the path
         index = path.find('.')
         if index == -1:
             name = path
@@ -166,98 +250,73 @@ class DataModel(object):
         else:
             name = path[: index]
             nextPath = path[index + 1: ]
-        # Get the attribute
-        try:
-            value = getattr(self, name)
-        except AttributeError:
-            # Not found
-            return
-        # Yield return
-        if not nextPath:
-            yield value
-        else:
-            # Get the type
-            try:
-                _type = getattr(type(self), name)
-            except AttributeError:
-                # Type not found, may not be a model type
-                return
-            # Continue quering the value via type
-            for v in _type.query(value, nextPath):
-                yield v
+        # Get the fields
+        fields = getattr(type(self), FILEDS_NAME)
+        if not name in fields:
+            raise QueryNotMatchError(name, nextPath)
+        t = fields[name]
+        # Get the value
+        if not self.__existvalue__(name):
+            raise QueryNotMatchError(name, nextPath, t)
+        # Return
+        return t, name, self.__getvalue__(name), nextPath
 
-    def match(self, condition):
-        """Check if this model match the condition
+    def query(self, path):
+        """Query value by path
         Parameters:
-            condition               The condition object
+            path                    A string path
+        Returns:
+            value
+        """
+        try:
+            t, name, value, nextPath = self.queryMySelf(path)
+            if not nextPath:
+                yield value
+            else:
+                for v in t.query(value, nextPath):
+                    yield v
+        except QueryNotMatchError:
+            pass
+
+    def match(self, query):
+        """Check if this model match the query
+        Parameters:
+            query                   The condition object
         Returns:
             True / False
         """
-        return condition.check(self)
-
-    def update(self, updates):
-        """Update this model by the update actions
-        """
-        for update in updates:
-            update.execute(self)
+        return query.check(self)
 
     def dump(self, context = None):
         """Dump this model
         """
-        if not context:
-            context = DEFAULT_DUMP_CONTEXT
+        context = context or DEFAULT_DUMP_CONTEXT
         # Get all fields
         fields = getattr(type(self), FILEDS_NAME)
         # Validate the required fields and validate the field
-        rawValues = {}
+        container = {}
         for name, field in fields.iteritems():
             if self.__existvalue__(name):
-                value = field.dump(self.__getvalue__(name), context)
-                if not field.isEmpty(value) or field.dumpEmpty:
-                    rawValues[name] = value
-            elif field.dumpEmpty:
-                rawValues[name] = field.emptyDump()
+                try:
+                    value = field.dump(self.__getvalue__(name), self, container, context)
+                except FieldNotDumpError:
+                    continue
+                # Set value
+                container[name] = value
         # Done
-        return rawValues
+        return container
 
     def clone(self):
         """Clone this data model
         """
-        raise NotImplementedError
-
-    def validateRequiredFields(self, fixByDefault = True):
-        """Validate the required fields
-        """
         # Get all fields
         fields = getattr(type(self), FILEDS_NAME)
-        # Get metadata
-        metadata = getattr(type(self), METADATA_NAME) if hasattr(type(self), METADATA_NAME) else ModelMetadata.getDefault()
-        # Check required
-        for name, field in fields.iteritems():
-            if field.required and (not self.__existvalue__(name) or field.isEmpty(self.__getvalue__(name))):
-                # Check default
-                if fixByDefault and field.hasDefault():
-                    self.__setvalue__(name, field.load(field.getDefault(), LoadContext(name, None, self), ValidateContext(metadata.continueOnError)))
-                else:
-                    raise MissingRequiredFieldError(name)
-
-    def validate(self, context = None):
-        """Validate the model
-        """
-        # Get all fields
-        fields = getattr(type(self), FILEDS_NAME)
-        # Get metadata
-        metadata = getattr(type(self), METADATA_NAME) if hasattr(type(self), METADATA_NAME) else ModelMetadata.getDefault()
-        # Check required
-        self.validateRequiredFields()
-        # Validate the fields
-        if not context:
-            context = ValidateContext(metadata.continueOnError)
-        for name, field in fields.iteritems():
-            if self.__existvalue__(name):
-                value = self.__getvalue__(name)
-                if not field.isEmpty(value):
-                    field.validate(value, context)
+        clonedFields = {}
+        for k, t in fields.iteritems():
+            if self.__existvalue__(k):
+                clonedFields[k] = t.clone(self.__getvalue__(k))
+        # Create new one
+        return type(self)(clonedFields)
 
     @classmethod
     def getMetadata(cls):
@@ -271,6 +330,12 @@ class DataModel(object):
         """Set metadata
         """
         setattr(cls, METADATA_NAME, metadata)
+
+    @classmethod
+    def load(cls, raw, continueOnError = False):
+        """Load from raw object
+        """
+        return cls(raw, continueOnError)
 
 def randomID(length = 32):
     """Get a random id
