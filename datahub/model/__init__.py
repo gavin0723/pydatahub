@@ -10,7 +10,7 @@
 """
 
 from spec import nullValue, ModelMetadata, DumpContext, IndexAttr, ExpireAttr
-from models import DataModel, IDDataModel
+from models import randomID, DataModel, IDDataModel
 from _types import DataType, StringType, IntegerType, FloatType, BooleanType, DatetimeType, DateType, TimeType, TimeDeltaType, \
     ListType, SetType, DictType, ModelType, DynamicModelType, AnyType
 
