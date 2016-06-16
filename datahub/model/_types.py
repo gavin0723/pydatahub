@@ -702,7 +702,10 @@ class DictType(DataType):
     def __dumpvalue__(self, value, model, container, context):
         """Dump the value
         """
-        return dict(map(lambda (k, v): (k, self.itemType.dump(v, model, container, context)), value.iteritems()))
+        if not self.isEmpty(value):
+            return dict(map(lambda (k, v): (k, self.itemType.dump(v, model, container, context)), value.iteritems()))
+        else:
+            return value
 
     def __validatevalue__(self, value, required, continueOnError):
         """Validate the value
