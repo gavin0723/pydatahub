@@ -11,20 +11,22 @@
 
 import sys
 reload(sys)
-sys.setdefaultencoding('utf8')
+sys.setdefaultencoding("utf8")
 
 from setuptools import setup, find_packages
 
-requirements = [ x.strip() for x in open('requirements.txt').readlines() ]
+import datahub
+
+requirements = [ x.strip() for x in open("requirements.txt").readlines() ]
 
 setup(
-    name = 'datahub',
-    author = 'lipixun',
-    author_email = 'lipixun@outlook.com',
-    url = 'https://github.com/lipixun/pydatahub',
+    name = "datahub",
+    version = datahub.__version__,
+    author = "lipixun",
+    author_email = "lipixun@outlook.com",
+    url = "https://github.com/lipixun/pydatahub",
     packages = find_packages(),
     install_requires = requirements,
-    description = 'The datahub framework',
-    long_description = open('README.md').read(),
+    description = "The datahub framework",
+    long_description = open("README.md").read(),
 )
-
