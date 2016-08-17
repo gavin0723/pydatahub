@@ -1,12 +1,10 @@
 # encoding=utf8
 
-""" The datahub
+""" The datahub data service
     Author: lipixun
-    Created Time : 五  3/11 18:58:27 2016
+    Created Time : 二  8/16 10:24:05 2016
 
     File Name: __init__.py
     Description:
 
 """
-
-__version__ = "1.1"

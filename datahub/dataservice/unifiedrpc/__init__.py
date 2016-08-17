@@ -1,12 +1,10 @@
 # encoding=utf8
 
-""" The datahub
+""" The unifiedrpc data service binding
     Author: lipixun
-    Created Time : 五  3/11 18:58:27 2016
+    Created Time : 二  8/16 10:23:18 2016
 
     File Name: __init__.py
     Description:
 
 """
-
-__version__ = "1.1"

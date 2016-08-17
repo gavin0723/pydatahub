@@ -525,7 +525,13 @@ class ListType(DataType):
     def __dumpvalue__(self, value, model, container, context):
         """Dump the value
         """
-        return [ self.itemType.dump(x, model, container, context) for x in value ]
+        dumpedValue = []
+        for v in value:
+            try:
+                dumpedValue.append(self.itemType.dump(v, model, container, context))
+            except FieldNotDumpError:
+                pass
+        return dumpedValue
 
     def __validatevalue__(self, value, required, continueOnError):
         """Validate the value
@@ -619,7 +625,13 @@ class SetType(DataType):
     def __dumpvalue__(self, value, model, container, context):
         """Dump the value
         """
-        return [ self.itemType.dump(x, model, container, context) for x in value ]
+        dumpedValue = []
+        for v in value:
+            try:
+                dumpedValue.append(self.itemType.dump(v, model, container, context))
+            except FieldNotDumpError:
+                pass
+        return dumpedValue
 
     def __validatevalue__(self, value, required, continueOnError):
         """Validate the value
@@ -703,7 +715,13 @@ class DictType(DataType):
         """Dump the value
         """
         if not self.isEmpty(value):
-            return dict(map(lambda (k, v): (k, self.itemType.dump(v, model, container, context)), value.iteritems()))
+            dumpedValue = {}
+            for k, v in value.iteritems():
+                try:
+                    dumpedValue[k] = self.itemType.dump(v, model, container, context)
+                except FieldNotDumpError:
+                    pass
+            return dumpedValue
         else:
             return value
 

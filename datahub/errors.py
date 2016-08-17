@@ -81,7 +81,7 @@ class DuplicatedKeyError(DataHubError):
     def __str__(self):
         """Convert to string
         """
-        return 'Key [%s] Message [%s]' % (key, message)
+        return 'Key [%s] Message [%s]' % (self.key, self.message)
 
 class ModelNotFoundError(DataHubError):
     """The model not found error
